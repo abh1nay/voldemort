@@ -357,7 +357,7 @@ public class ClientConfig {
      * @param routingTimeout The timeout for all operations to complete.
      * @param unit The time unit of the timeout value
      */
-    public ClientConfig setRoutingTimeout(int routingTimeout, TimeUnit unit) {
+    private ClientConfig setRoutingTimeout(int routingTimeout, TimeUnit unit) {
         this.routingTimeoutMs = unit.toMillis(routingTimeout);
         return this;
     }
