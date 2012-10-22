@@ -345,6 +345,7 @@ public class AdminClient {
     private HashMap<Integer, DataOutputStream> nodeIdToOutputStreamRequest;
     private HashMap<Integer, DataInputStream> nodeIdToInputStreamRequest;
 
+    private HashMap<Integer, Boolean> nodeIdInitialized;
     private SocketPool streamingSocketPool;
 
     List<StoreDefinition> remoteStoreDefs;
@@ -411,6 +412,7 @@ public class AdminClient {
         nodeIdToSocketRequest = new HashMap();
         nodeIdToOutputStreamRequest = new HashMap();
         nodeIdToInputStreamRequest = new HashMap();
+        nodeIdInitialized = new HashMap();
 
         for(Node node: this.getAdminClientCluster().getNodes()) {
 
@@ -424,6 +426,7 @@ public class AdminClient {
             nodeIdToSocketRequest.put(node.getId(), destination);
             nodeIdToOutputStreamRequest.put(node.getId(), outputStream);
             nodeIdToInputStreamRequest.put(node.getId(), inputStream);
+            nodeIdInitialized.put(node.getId(), false);
             remoteStoreDefs = getRemoteStoreDefList(node.getId()).getValue();
 
         }
@@ -466,42 +469,45 @@ public class AdminClient {
         VAdminProto.UpdatePartitionEntriesRequest.Builder updateRequest = VAdminProto.UpdatePartitionEntriesRequest.newBuilder()
                                                                                                                    .setStore(storeToStream)
                                                                                                                    .setPartitionEntry(partitionEntry);
-        if(newBatch) {
-            for(Node node: this.getAdminClientCluster().getNodes()) {
-                DataOutputStream outputStream = nodeIdToOutputStreamRequest.get(node.getId());
-                try {
-                    ProtoUtils.writeMessage(outputStream,
-                                            VAdminProto.VoldemortAdminRequest.newBuilder()
-                                                                             .setType(VAdminProto.AdminRequestType.UPDATE_PARTITION_ENTRIES)
-                                                                             .setUpdatePartitionEntries(updateRequest)
-                                                                             .build());
-                } catch(IOException e) {
-
-                    Future future = streamingresults.submit(recoveryCallback);
-                    try {
-                        future.get();
-                    } catch(InterruptedException e1) {
-                        MARKED_BAD = true;
-                        e1.printStackTrace();
-                        throw new VoldemortException("Recovery Callback failed");
-                    } catch(ExecutionException e1) {
-                        MARKED_BAD = true;
-                        e1.printStackTrace();
-                        throw new VoldemortException("Recovery Callback failed");
-                    }
-
-                    e.printStackTrace();
-                }
-            }
-            newBatch = false;
-        }
+        /*
+         * if(newBatch) { for(Node node:
+         * this.getAdminClientCluster().getNodes()) { DataOutputStream
+         * outputStream = nodeIdToOutputStreamRequest.get(node.getId()); try {
+         * ProtoUtils.writeMessage(outputStream,
+         * VAdminProto.VoldemortAdminRequest.newBuilder()
+         * .setType(VAdminProto.AdminRequestType.UPDATE_PARTITION_ENTRIES)
+         * .setUpdatePartitionEntries(updateRequest) .build()); }
+         * catch(IOException e) {
+         * 
+         * Future future = streamingresults.submit(recoveryCallback); try {
+         * future.get(); } catch(InterruptedException e1) { MARKED_BAD = true;
+         * e1.printStackTrace(); throw new
+         * VoldemortException("Recovery Callback failed"); }
+         * catch(ExecutionException e1) { MARKED_BAD = true;
+         * e1.printStackTrace(); throw new
+         * VoldemortException("Recovery Callback failed"); }
+         * 
+         * e.printStackTrace(); } } newBatch = false; return; }
+         */
 
         // sent the k/v pair to the nodes
         for(Node node: nodeList) {
 
             DataOutputStream outputStream = nodeIdToOutputStreamRequest.get(node.getId());
             try {
-                ProtoUtils.writeMessage(outputStream, updateRequest.build());
+                if(nodeIdInitialized.get(node.getId())) {
+                    ProtoUtils.writeMessage(outputStream, updateRequest.build());
+                } else {
+                    ProtoUtils.writeMessage(outputStream,
+                                            VAdminProto.VoldemortAdminRequest.newBuilder()
+                                                                             .setType(VAdminProto.AdminRequestType.UPDATE_PARTITION_ENTRIES)
+                                                                             .setUpdatePartitionEntries(updateRequest)
+                                                                             .build());
+                    outputStream.flush();
+                    nodeIdInitialized.put(node.getId(), true);
+
+                }
+
                 entriesProcessed++;
 
             } catch(IOException e) {
@@ -529,6 +535,10 @@ public class AdminClient {
             newBatch = true;
 
             for(Node node: this.getAdminClientCluster().getNodes()) {
+
+                if(!nodeIdInitialized.get(node.getId()))
+                    continue;
+                nodeIdInitialized.put(node.getId(), false);
                 DataOutputStream outputStream = nodeIdToOutputStreamRequest.get(node.getId());
 
                 try {
@@ -613,6 +623,9 @@ public class AdminClient {
     public void closeStreamingSession() {
 
         for(Node node: this.getAdminClientCluster().getNodes()) {
+
+            if(!nodeIdInitialized.get(node.getId()))
+                continue;
             DataOutputStream outputStream = nodeIdToOutputStreamRequest.get(node.getId());
 
             try {
