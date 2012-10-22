@@ -294,6 +294,16 @@ message ReserveMemoryResponse {
   optional Error error = 1;
 }
 
+message BDBModeChangeRequest {
+  required string store_name = 1;
+  required bool deferred = 2;
+  
+}
+
+message BDBModeChangeResponse {
+  optional Error error = 1;
+}
+
 enum AdminRequestType {
   GET_METADATA = 0;
   UPDATE_METADATA = 1;
@@ -323,6 +333,7 @@ enum AdminRequestType {
   DELETE_STORE_REBALANCE_STATE = 27;
   NATIVE_BACKUP = 28;
   RESERVE_MEMORY = 29;
+  BDB_Mode_Change = 30;
 }
 
 message VoldemortAdminRequest {
@@ -355,4 +366,5 @@ message VoldemortAdminRequest {
   optional DeleteStoreRebalanceStateRequest delete_store_rebalance_state = 29;
   optional NativeBackupRequest native_backup = 30;
   optional ReserveMemoryRequest reserve_memory = 31;
+  optional BDBModeChangeRequest bdb_change_mode = 32;
 }
