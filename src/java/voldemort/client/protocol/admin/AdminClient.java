@@ -668,6 +668,10 @@ public class AdminClient {
     private HashMap<String, RoutingStrategy> storeToRoutingStrategy;
     private HashMap<Pair<String, Integer>, Boolean> nodeIdStoreInitialized;
 
+    private HashMap<Pair<String, Integer>, SocketDestination> nodeIdStoreToSocketRequest;
+    private HashMap<Pair<String, Integer>, DataOutputStream> nodeIdStoreToOutputStreamRequest;
+    private HashMap<Pair<String, Integer>, DataInputStream> nodeIdStoreToInputStreamRequest;
+
     private List<String> storeNames;
 
     /**
@@ -704,35 +708,38 @@ public class AdminClient {
         TimeUnit unit = TimeUnit.SECONDS;
 
         // socket pool with 2 sockets per node
-        streamingSocketPool = new SocketPool(this.getAdminClientCluster().getNumberOfNodes() * 2,
+        streamingSocketPool = new SocketPool(this.getAdminClientCluster().getNumberOfNodes()
+                                                     * stores.size(),
                                              (int) unit.toMillis(adminClientConfig.getAdminConnectionTimeoutSec()),
                                              (int) unit.toMillis(adminClientConfig.getAdminSocketTimeoutSec()),
                                              adminClientConfig.getAdminSocketBufferSize(),
                                              adminClientConfig.getAdminSocketKeepAlive());
 
-        nodeIdToSocketRequest = new HashMap();
-        nodeIdToOutputStreamRequest = new HashMap();
-        nodeIdToInputStreamRequest = new HashMap();
+        nodeIdStoreToSocketRequest = new HashMap();
+        nodeIdStoreToOutputStreamRequest = new HashMap();
+        nodeIdStoreToInputStreamRequest = new HashMap();
         nodeIdStoreInitialized = new HashMap();
         storeToRoutingStrategy = new HashMap();
+        for(String store: stores) {
 
-        for(Node node: this.getAdminClientCluster().getNodes()) {
+            for(Node node: this.getAdminClientCluster().getNodes()) {
 
-            SocketDestination destination = new SocketDestination(node.getHost(),
-                                                                  node.getAdminPort(),
-                                                                  RequestFormatType.ADMIN_PROTOCOL_BUFFERS);
-            SocketAndStreams sands = pool.checkout(destination);
-            DataOutputStream outputStream = sands.getOutputStream();
-            DataInputStream inputStream = sands.getInputStream();
+                SocketDestination destination = new SocketDestination(node.getHost(),
+                                                                      node.getAdminPort(),
+                                                                      RequestFormatType.ADMIN_PROTOCOL_BUFFERS);
+                SocketAndStreams sands = pool.checkout(destination);
+                DataOutputStream outputStream = sands.getOutputStream();
+                DataInputStream inputStream = sands.getInputStream();
 
-            nodeIdToSocketRequest.put(node.getId(), destination);
-            nodeIdToOutputStreamRequest.put(node.getId(), outputStream);
-            nodeIdToInputStreamRequest.put(node.getId(), inputStream);
-            for(String store: stores) {
+                nodeIdStoreToSocketRequest.put(new Pair(store, node.getId()), destination);
+                nodeIdStoreToOutputStreamRequest.put(new Pair(store, node.getId()), outputStream);
+                nodeIdStoreToInputStreamRequest.put(new Pair(store, node.getId()), inputStream);
+
                 nodeIdStoreInitialized.put(new Pair(store, node.getId()), false);
-            }
-            remoteStoreDefs = getRemoteStoreDefList(node.getId()).getValue();
 
+                remoteStoreDefs = getRemoteStoreDefList(node.getId()).getValue();
+
+            }
         }
 
         boolean foundStore = false;
@@ -763,6 +770,7 @@ public class AdminClient {
      * 
      * storeName takes an additional storename as a parameter
      **/
+    @SuppressWarnings("unchecked")
     public void streamingPut(ByteArray key, Versioned<byte[]> value, String storeName) {
 
         if(MARKED_BAD)
@@ -782,7 +790,8 @@ public class AdminClient {
         // sent the k/v pair to the nodes
         for(Node node: nodeList) {
 
-            DataOutputStream outputStream = nodeIdToOutputStreamRequest.get(node.getId());
+            DataOutputStream outputStream = nodeIdStoreToOutputStreamRequest.get(new Pair(storeName,
+                                                                                          node.getId()));
             try {
                 if(nodeIdStoreInitialized.get(new Pair(storeName, node.getId()))) {
                     ProtoUtils.writeMessage(outputStream, updateRequest.build());
@@ -833,17 +842,91 @@ public class AdminClient {
                         continue;
                     nodeUsed = true;
                     nodeIdStoreInitialized.put(new Pair(store, node.getId()), false);
+
+                    DataOutputStream outputStream = nodeIdStoreToOutputStreamRequest.get(new Pair(store,
+                                                                                                  node.getId()));
+
+                    try {
+                        ProtoUtils.writeEndOfStream(outputStream);
+                        outputStream.flush();
+                        DataInputStream inputStream = nodeIdStoreToInputStreamRequest.get(new Pair(store,
+                                                                                                   node.getId()));
+                        VAdminProto.UpdatePartitionEntriesResponse.Builder updateResponse = ProtoUtils.readToBuilder(inputStream,
+                                                                                                                     VAdminProto.UpdatePartitionEntriesResponse.newBuilder());
+                        if(updateResponse.hasError()) {
+                            Future future = streamingresults.submit(recoveryCallback);
+                            try {
+                                future.get();
+
+                            } catch(InterruptedException e1) {
+                                // TODO Auto-generated catch block
+                                e1.printStackTrace();
+                            } catch(ExecutionException e1) {
+                                // TODO Auto-generated catch block
+                                e1.printStackTrace();
+                            }
+                        }
+                        Future future = streamingresults.submit(checkpointCallback);
+                        try {
+                            future.get();
+
+                        } catch(InterruptedException e1) {
+                            // TODO Auto-generated catch block
+                            e1.printStackTrace();
+                        } catch(ExecutionException e1) {
+                            // TODO Auto-generated catch block
+                            e1.printStackTrace();
+                        }
+
+                    } catch(IOException e) {
+                        Future future = streamingresults.submit(recoveryCallback);
+                        try {
+                            future.get();
+
+                        } catch(InterruptedException e1) {
+                            MARKED_BAD = true;
+                            e1.printStackTrace();
+                            throw new VoldemortException("Recovery Callback failed");
+                        } catch(ExecutionException e1) {
+                            MARKED_BAD = true;
+                            e1.printStackTrace();
+                            throw new VoldemortException("Recovery Callback failed");
+                        }
+
+                        e.printStackTrace();
+                    }
                 }
 
-                if(!nodeUsed)
-                    continue;
+            }
+        }
 
-                DataOutputStream outputStream = nodeIdToOutputStreamRequest.get(node.getId());
+    }
+
+    /**
+     * Close the streaming session Flush all n/w buffers and call the commit
+     * callback
+     **/
+    public void closeStreamingSessions() {
+
+        for(Node node: this.getAdminClientCluster().getNodes()) {
+
+            boolean nodeUsed = false; // check if any data was sent at all
+            // to this node
+
+            for(String store: storeNames) {
+                if(!nodeIdStoreInitialized.get(new Pair(store, node.getId())))
+                    continue;
+                nodeUsed = true;
+                nodeIdStoreInitialized.put(new Pair(store, node.getId()), false);
+
+                DataOutputStream outputStream = nodeIdStoreToOutputStreamRequest.get(new Pair(store,
+                                                                                              node.getId()));
 
                 try {
                     ProtoUtils.writeEndOfStream(outputStream);
                     outputStream.flush();
-                    DataInputStream inputStream = nodeIdToInputStreamRequest.get(node.getId());
+                    DataInputStream inputStream = nodeIdStoreToInputStreamRequest.get(new Pair(store,
+                                                                                               node.getId()));
                     VAdminProto.UpdatePartitionEntriesResponse.Builder updateResponse = ProtoUtils.readToBuilder(inputStream,
                                                                                                                  VAdminProto.UpdatePartitionEntriesResponse.newBuilder());
                     if(updateResponse.hasError()) {
@@ -889,80 +972,7 @@ public class AdminClient {
                     e.printStackTrace();
                 }
             }
-        }
 
-    }
-
-    /**
-     * Close the streaming session Flush all n/w buffers and call the commit
-     * callback
-     **/
-    public void closeStreamingSessions() {
-
-        for(Node node: this.getAdminClientCluster().getNodes()) {
-
-            boolean nodeUsed = false; // check if any data was sent at all
-            // to this node
-
-            for(String store: storeNames) {
-                if(!nodeIdStoreInitialized.get(new Pair(store, node.getId())))
-                    continue;
-                nodeUsed = true;
-                nodeIdStoreInitialized.put(new Pair(store, node.getId()), false);
-            }
-
-            if(!nodeUsed)
-                continue;
-            DataOutputStream outputStream = nodeIdToOutputStreamRequest.get(node.getId());
-
-            try {
-                ProtoUtils.writeEndOfStream(outputStream);
-                outputStream.flush();
-                DataInputStream inputStream = nodeIdToInputStreamRequest.get(node.getId());
-                VAdminProto.UpdatePartitionEntriesResponse.Builder updateResponse = ProtoUtils.readToBuilder(inputStream,
-                                                                                                             VAdminProto.UpdatePartitionEntriesResponse.newBuilder());
-                if(updateResponse.hasError()) {
-                    Future future = streamingresults.submit(recoveryCallback);
-                    try {
-                        future.get();
-
-                    } catch(InterruptedException e1) {
-                        // TODO Auto-generated catch block
-                        e1.printStackTrace();
-                    } catch(ExecutionException e1) {
-                        // TODO Auto-generated catch block
-                        e1.printStackTrace();
-                    }
-                }
-                Future future = streamingresults.submit(checkpointCallback);
-                try {
-                    future.get();
-
-                } catch(InterruptedException e1) {
-                    // TODO Auto-generated catch block
-                    e1.printStackTrace();
-                } catch(ExecutionException e1) {
-                    // TODO Auto-generated catch block
-                    e1.printStackTrace();
-                }
-
-            } catch(IOException e) {
-                Future future = streamingresults.submit(recoveryCallback);
-                try {
-                    future.get();
-
-                } catch(InterruptedException e1) {
-                    MARKED_BAD = true;
-                    e1.printStackTrace();
-                    throw new VoldemortException("Recovery Callback failed");
-                } catch(ExecutionException e1) {
-                    MARKED_BAD = true;
-                    e1.printStackTrace();
-                    throw new VoldemortException("Recovery Callback failed");
-                }
-
-                e.printStackTrace();
-            }
         }
 
     }
