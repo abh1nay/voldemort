@@ -29,6 +29,8 @@ public class StreamingClientConfig implements Serializable {
             throw new VoldemortException("BootStrap URL Not defined");
         }
 
+        validateParams();
+
     }
 
     public int getBatchSize() {
