@@ -539,19 +539,19 @@ public class StreamingClient {
         if(MARKED_BAD)
             throw new VoldemortException("Cannot stream more entries since Recovery Callback Failed!");
 
-        VAdminProto.PartitionEntry partitionEntry = VAdminProto.PartitionEntry.newBuilder()
-                                                                              .setKey(ProtoUtils.encodeBytes(key))
-                                                                              .setVersioned(ProtoUtils.encodeVersioned(value))
-                                                                              .build();
-
         List<Node> nodeList = storeToRoutingStrategy.get(storeName).routeRequest(key.get());
-
-        VAdminProto.UpdatePartitionEntriesRequest.Builder updateRequest = VAdminProto.UpdatePartitionEntriesRequest.newBuilder()
-                                                                                                                   .setStore(storeName)
-                                                                                                                   .setPartitionEntry(partitionEntry);
 
         // sent the k/v pair to the nodes
         for(Node node: nodeList) {
+
+            VAdminProto.PartitionEntry partitionEntry = VAdminProto.PartitionEntry.newBuilder()
+                                                                                  .setKey(ProtoUtils.encodeBytes(key))
+                                                                                  .setVersioned(ProtoUtils.encodeVersioned(value))
+                                                                                  .build();
+
+            VAdminProto.UpdatePartitionEntriesRequest.Builder updateRequest = VAdminProto.UpdatePartitionEntriesRequest.newBuilder()
+                                                                                                                       .setStore(storeName)
+                                                                                                                       .setPartitionEntry(partitionEntry);
 
             DataOutputStream outputStream = nodeIdStoreToOutputStreamRequest.get(new Pair(storeName,
                                                                                           node.getId()));
