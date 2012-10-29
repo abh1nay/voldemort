@@ -92,6 +92,9 @@ public class StreamingClient {
                                      Callable recoveryCallback,
                                      boolean allowMerge) {
 
+        // TODO
+        // internally call sessions with a single store
+
         adminClientConfig = new AdminClientConfig();
         adminClient = new AdminClient(bootstrapURL, adminClientConfig);
         storeToStream = store;
@@ -432,6 +435,8 @@ public class StreamingClient {
 
     private List<String> storeNames;
 
+    private final static int MAX_STORES_PER_SESSION = 100;
+
     /**
      ** stores - the list of name of the stores to be streamed to
      * 
@@ -471,7 +476,7 @@ public class StreamingClient {
 
         // socket pool
         streamingSocketPool = new SocketPool(adminClient.getAdminClientCluster().getNumberOfNodes()
-                                                     * stores.size(),
+                                                     * MAX_STORES_PER_SESSION,
                                              (int) unit.toMillis(adminClientConfig.getAdminConnectionTimeoutSec()),
                                              (int) unit.toMillis(adminClientConfig.getAdminSocketTimeoutSec()),
                                              adminClientConfig.getAdminSocketBufferSize(),
@@ -526,6 +531,52 @@ public class StreamingClient {
 
     }
 
+    /*
+     * Add another store destination to an existing streaming session
+     */
+    private void addStoreToSession(String store) {
+
+        storeNames.add(store);
+
+        for(Node node: adminClient.getAdminClientCluster().getNodes()) {
+
+            SocketDestination destination = new SocketDestination(node.getHost(),
+                                                                  node.getAdminPort(),
+                                                                  RequestFormatType.ADMIN_PROTOCOL_BUFFERS);
+            SocketAndStreams sands = streamingSocketPool.checkout(destination);
+            DataOutputStream outputStream = sands.getOutputStream();
+            DataInputStream inputStream = sands.getInputStream();
+
+            nodeIdStoreToSocketRequest.put(new Pair(store, node.getId()), destination);
+            nodeIdStoreToOutputStreamRequest.put(new Pair(store, node.getId()), outputStream);
+            nodeIdStoreToInputStreamRequest.put(new Pair(store, node.getId()), inputStream);
+            nodeIdStoreToSocketAndStreams.put(new Pair(store, node.getId()), sands);
+            nodeIdStoreInitialized.put(new Pair(store, node.getId()), false);
+
+            remoteStoreDefs = adminClient.getRemoteStoreDefList(node.getId()).getValue();
+
+        }
+
+        boolean foundStore = false;
+
+        for(StoreDefinition remoteStoreDef: remoteStoreDefs) {
+            if(remoteStoreDef.getName().equals(store)) {
+                RoutingStrategyFactory factory = new RoutingStrategyFactory();
+                RoutingStrategy storeRoutingStrategy = factory.updateRoutingStrategy(remoteStoreDef,
+                                                                                     adminClient.getAdminClientCluster());
+
+                storeToRoutingStrategy.put(store, storeRoutingStrategy);
+                foundStore = true;
+                break;
+            }
+        }
+        if(!foundStore) {
+            throw new VoldemortException("Store Name not found on the cluster");
+
+        }
+
+    }
+
     /**
      ** key - The key
      * 
@@ -535,6 +586,12 @@ public class StreamingClient {
      **/
     @SuppressWarnings({ "unchecked", "rawtypes", "unused" })
     public void streamingPut(ByteArray key, Versioned<byte[]> value, String storeName) {
+
+        // If store does not exist in the stores list
+        // add it and checkout a socket
+        if(!storeNames.contains(storeName)) {
+            addStoreToSession(storeName);
+        }
 
         if(MARKED_BAD)
             throw new VoldemortException("Cannot stream more entries since Recovery Callback Failed!");
