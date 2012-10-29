@@ -4,6 +4,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -29,17 +30,12 @@ import voldemort.versioning.Versioned;
 
 public class StreamingClient {
 
-    private String storeToStream = null;
+    @SuppressWarnings("rawtypes")
     private Callable checkpointCallback = null;
+    @SuppressWarnings("rawtypes")
     private Callable recoveryCallback = null;
     private boolean allowMerge = false;
 
-    private HashMap<Integer, SocketDestination> nodeIdToSocketRequest;
-    private HashMap<Integer, DataOutputStream> nodeIdToOutputStreamRequest;
-    private HashMap<Integer, DataInputStream> nodeIdToInputStreamRequest;
-    private HashMap<Integer, SocketAndStreams> nodeIdToSocketAndStreams;
-
-    private HashMap<Integer, Boolean> nodeIdInitialized;
     private SocketPool streamingSocketPool;
 
     List<StoreDefinition> remoteStoreDefs;
@@ -51,8 +47,8 @@ public class StreamingClient {
     boolean isMultiSession;
     ExecutorService streamingresults;
 
-    private static final int BATCH_SIZE = 1000;
-    private static final int THROTTLE_QPS = 3000;
+    private static int BATCH_SIZE;
+    private static int THROTTLE_QPS;
     private int entriesProcessed;
 
     private static boolean MARKED_BAD = false;
@@ -64,8 +60,23 @@ public class StreamingClient {
 
     String bootstrapURL;
 
-    public StreamingClient(String bootstrapURL) {
-        this.bootstrapURL = bootstrapURL;
+    private HashMap<String, RoutingStrategy> storeToRoutingStrategy;
+    private HashMap<Pair<String, Integer>, Boolean> nodeIdStoreInitialized;
+
+    private HashMap<Pair<String, Integer>, SocketDestination> nodeIdStoreToSocketRequest;
+    private HashMap<Pair<String, Integer>, DataOutputStream> nodeIdStoreToOutputStreamRequest;
+    private HashMap<Pair<String, Integer>, DataInputStream> nodeIdStoreToInputStreamRequest;
+
+    private HashMap<Pair<String, Integer>, SocketAndStreams> nodeIdStoreToSocketAndStreams;
+
+    private List<String> storeNames;
+
+    private final static int MAX_STORES_PER_SESSION = 100;
+
+    public StreamingClient(StreamingClientConfig config) {
+        this.bootstrapURL = config.getBootstrapURL();
+        BATCH_SIZE = config.getBatchSize();
+        THROTTLE_QPS = config.getThrottleQPS();
 
     }
 
@@ -92,81 +103,10 @@ public class StreamingClient {
                                      Callable recoveryCallback,
                                      boolean allowMerge) {
 
-        // TODO
-        // internally call sessions with a single store
-
-        adminClientConfig = new AdminClientConfig();
-        adminClient = new AdminClient(bootstrapURL, adminClientConfig);
-        storeToStream = store;
-        this.checkpointCallback = checkpointCallback;
-        this.recoveryCallback = recoveryCallback;
-        this.allowMerge = allowMerge;
-        streamingresults = Executors.newFixedThreadPool(3);
-        entriesProcessed = 0;
-        newBatch = true;
-        cleanedUp = false;
-        isMultiSession = false;
-        this.throttler = new EventThrottler(THROTTLE_QPS);
-        if(allowMerge == false) {
-
-            // new admin call to open BDB in a deferred writes - bulk load mode
-
-            VAdminProto.BDBModeChangeRequest.Builder updateRequest = VAdminProto.BDBModeChangeRequest.newBuilder()
-                                                                                                     .setStoreName(storeToStream)
-                                                                                                     .setDeferred(true);
-
-            // TODO add check if store already exists throw warning?
-
-        }
-
-        TimeUnit unit = TimeUnit.SECONDS;
-
-        // socket pool with 2 sockets per node
-        streamingSocketPool = new SocketPool(adminClient.getAdminClientCluster().getNumberOfNodes() * 2,
-                                             (int) unit.toMillis(adminClientConfig.getAdminConnectionTimeoutSec()),
-                                             (int) unit.toMillis(adminClientConfig.getAdminSocketTimeoutSec()),
-                                             adminClientConfig.getAdminSocketBufferSize(),
-                                             adminClientConfig.getAdminSocketKeepAlive());
-
-        nodeIdToSocketRequest = new HashMap();
-        nodeIdToOutputStreamRequest = new HashMap();
-        nodeIdToInputStreamRequest = new HashMap();
-        nodeIdInitialized = new HashMap();
-        nodeIdToSocketAndStreams = new HashMap();
-
-        for(Node node: adminClient.getAdminClientCluster().getNodes()) {
-
-            SocketDestination destination = new SocketDestination(node.getHost(),
-                                                                  node.getAdminPort(),
-                                                                  RequestFormatType.ADMIN_PROTOCOL_BUFFERS);
-            SocketAndStreams sands = streamingSocketPool.checkout(destination);
-            DataOutputStream outputStream = sands.getOutputStream();
-            DataInputStream inputStream = sands.getInputStream();
-
-            nodeIdToSocketAndStreams.put(node.getId(), sands);
-            nodeIdToSocketRequest.put(node.getId(), destination);
-            nodeIdToOutputStreamRequest.put(node.getId(), outputStream);
-            nodeIdToInputStreamRequest.put(node.getId(), inputStream);
-            nodeIdInitialized.put(node.getId(), false);
-            remoteStoreDefs = adminClient.getRemoteStoreDefList(node.getId()).getValue();
-
-        }
-
-        boolean foundStore = false;
-        for(StoreDefinition remoteStoreDef: remoteStoreDefs) {
-            if(remoteStoreDef.getName().equals(store)) {
-                RoutingStrategyFactory factory = new RoutingStrategyFactory();
-                this.routingStrategy = factory.updateRoutingStrategy(remoteStoreDef,
-                                                                     adminClient.getAdminClientCluster());
-                foundStore = true;
-                break;
-            }
-        }
-
-        if(!foundStore) {
-            throw new VoldemortException("Store Name not found on the cluster");
-
-        }
+        // internally call initsessions with a single store
+        List<String> stores = new ArrayList();
+        stores.add(store);
+        initStreamingSessions(stores, checkpointCallback, recoveryCallback, allowMerge);
 
     }
 
@@ -178,123 +118,13 @@ public class StreamingClient {
     @SuppressWarnings({ "unchecked", "rawtypes" })
     public void streamingPut(ByteArray key, Versioned<byte[]> value) {
 
-        if(MARKED_BAD)
+        if(MARKED_BAD) {
             throw new VoldemortException("Cannot stream more entries since Recovery Callback Failed!");
-
-        List<Node> nodeList = routingStrategy.routeRequest(key.get());
-
-        // sent the k/v pair to the nodes
-        for(Node node: nodeList) {
-
-            VAdminProto.PartitionEntry partitionEntry = VAdminProto.PartitionEntry.newBuilder()
-                                                                                  .setKey(ProtoUtils.encodeBytes(key))
-                                                                                  .setVersioned(ProtoUtils.encodeVersioned(value))
-                                                                                  .build();
-
-            VAdminProto.UpdatePartitionEntriesRequest.Builder updateRequest = VAdminProto.UpdatePartitionEntriesRequest.newBuilder()
-                                                                                                                       .setStore(storeToStream)
-                                                                                                                       .setPartitionEntry(partitionEntry);
-
-            DataOutputStream outputStream = nodeIdToOutputStreamRequest.get(node.getId());
-            try {
-                if(nodeIdInitialized.get(node.getId())) {
-                    ProtoUtils.writeMessage(outputStream, updateRequest.build());
-                } else {
-                    ProtoUtils.writeMessage(outputStream,
-                                            VAdminProto.VoldemortAdminRequest.newBuilder()
-                                                                             .setType(VAdminProto.AdminRequestType.UPDATE_PARTITION_ENTRIES)
-                                                                             .setUpdatePartitionEntries(updateRequest)
-                                                                             .build());
-                    outputStream.flush();
-                    nodeIdInitialized.put(node.getId(), true);
-
-                }
-
-                entriesProcessed++;
-
-            } catch(IOException e) {
-                Future future = streamingresults.submit(recoveryCallback);
-                try {
-                    future.get();
-
-                } catch(InterruptedException e1) {
-                    MARKED_BAD = true;
-                    e1.printStackTrace();
-                    throw new VoldemortException("Recovery Callback failed");
-                } catch(ExecutionException e1) {
-                    MARKED_BAD = true;
-                    e1.printStackTrace();
-                    throw new VoldemortException("Recovery Callback failed");
-                }
-
-                e.printStackTrace();
-            }
-
         }
 
-        if(entriesProcessed == BATCH_SIZE) {
-            entriesProcessed = 0;
-            newBatch = true;
-
-            for(Node node: adminClient.getAdminClientCluster().getNodes()) {
-
-                if(!nodeIdInitialized.get(node.getId()))
-                    continue;
-                nodeIdInitialized.put(node.getId(), false);
-                DataOutputStream outputStream = nodeIdToOutputStreamRequest.get(node.getId());
-
-                try {
-                    ProtoUtils.writeEndOfStream(outputStream);
-                    outputStream.flush();
-                    DataInputStream inputStream = nodeIdToInputStreamRequest.get(node.getId());
-                    VAdminProto.UpdatePartitionEntriesResponse.Builder updateResponse = ProtoUtils.readToBuilder(inputStream,
-                                                                                                                 VAdminProto.UpdatePartitionEntriesResponse.newBuilder());
-                    if(updateResponse.hasError()) {
-                        Future future = streamingresults.submit(recoveryCallback);
-                        try {
-                            future.get();
-
-                        } catch(InterruptedException e1) {
-                            // TODO Auto-generated catch block
-                            e1.printStackTrace();
-                        } catch(ExecutionException e1) {
-                            // TODO Auto-generated catch block
-                            e1.printStackTrace();
-                        }
-                    }
-                    Future future = streamingresults.submit(checkpointCallback);
-                    try {
-                        future.get();
-
-                    } catch(InterruptedException e1) {
-                        // TODO Auto-generated catch block
-                        e1.printStackTrace();
-                    } catch(ExecutionException e1) {
-                        // TODO Auto-generated catch block
-                        e1.printStackTrace();
-                    }
-
-                } catch(IOException e) {
-                    Future future = streamingresults.submit(recoveryCallback);
-                    try {
-                        future.get();
-
-                    } catch(InterruptedException e1) {
-                        MARKED_BAD = true;
-                        e1.printStackTrace();
-                        throw new VoldemortException("Recovery Callback failed");
-                    } catch(ExecutionException e1) {
-                        MARKED_BAD = true;
-                        e1.printStackTrace();
-                        throw new VoldemortException("Recovery Callback failed");
-                    }
-
-                    e.printStackTrace();
-                }
-            }
+        for(String store: storeNames) {
+            streamingPut(key, value, store);
         }
-
-        throttler.maybeThrottle(1);
 
     }
 
@@ -306,19 +136,8 @@ public class StreamingClient {
     @SuppressWarnings({ "unchecked", "rawtypes" })
     public void closeStreamingSession(Callable resetCheckpointCallback) {
 
-        closeStreamingSession();
+        closeStreamingSessions(resetCheckpointCallback);
 
-        Future future = streamingresults.submit(resetCheckpointCallback);
-        try {
-            future.get();
-
-        } catch(InterruptedException e1) {
-            // TODO Auto-generated catch block
-            e1.printStackTrace();
-        } catch(ExecutionException e1) {
-            // TODO Auto-generated catch block
-            e1.printStackTrace();
-        }
     }
 
     /**
@@ -328,80 +147,8 @@ public class StreamingClient {
     @SuppressWarnings({ "unchecked", "rawtypes" })
     public void closeStreamingSession() {
 
-        for(Node node: adminClient.getAdminClientCluster().getNodes()) {
+        closeStreamingSessions();
 
-            if(!nodeIdInitialized.get(node.getId()))
-                continue;
-            DataOutputStream outputStream = nodeIdToOutputStreamRequest.get(node.getId());
-
-            try {
-                ProtoUtils.writeEndOfStream(outputStream);
-                outputStream.flush();
-                DataInputStream inputStream = nodeIdToInputStreamRequest.get(node.getId());
-                VAdminProto.UpdatePartitionEntriesResponse.Builder updateResponse = ProtoUtils.readToBuilder(inputStream,
-                                                                                                             VAdminProto.UpdatePartitionEntriesResponse.newBuilder());
-                if(updateResponse.hasError()) {
-                    Future future = streamingresults.submit(recoveryCallback);
-                    try {
-                        future.get();
-
-                    } catch(InterruptedException e1) {
-                        // TODO Auto-generated catch block
-                        e1.printStackTrace();
-                    } catch(ExecutionException e1) {
-                        // TODO Auto-generated catch block
-                        e1.printStackTrace();
-                    }
-                }
-                Future future = streamingresults.submit(checkpointCallback);
-                try {
-                    future.get();
-
-                } catch(InterruptedException e1) {
-                    // TODO Auto-generated catch block
-                    e1.printStackTrace();
-                } catch(ExecutionException e1) {
-                    // TODO Auto-generated catch block
-                    e1.printStackTrace();
-                }
-
-            } catch(IOException e) {
-                Future future = streamingresults.submit(recoveryCallback);
-                try {
-                    future.get();
-
-                } catch(InterruptedException e1) {
-                    MARKED_BAD = true;
-                    e1.printStackTrace();
-                    throw new VoldemortException("Recovery Callback failed");
-                } catch(ExecutionException e1) {
-                    MARKED_BAD = true;
-                    e1.printStackTrace();
-                    throw new VoldemortException("Recovery Callback failed");
-                }
-
-                e.printStackTrace();
-            }
-        }
-
-        cleanupSession();
-
-    }
-
-    /*
-     * Cleanup a single store session
-     */
-    private void cleanupSession() {
-        for(Node node: adminClient.getAdminClientCluster().getNodes()) {
-
-            SocketAndStreams sands = nodeIdToSocketAndStreams.get(node.getId());
-            close(sands.getSocket());
-            SocketDestination destination = nodeIdToSocketRequest.get(node.getId());
-            streamingSocketPool.checkin(destination, sands);
-
-        }
-
-        cleanedUp = true;
     }
 
     private void close(Socket socket) {
@@ -414,28 +161,12 @@ public class StreamingClient {
 
     @Override
     protected void finalize() {
-        if(!cleanedUp && !isMultiSession) {
-            cleanupSession();
-        }
 
-        if(!cleanedUp && isMultiSession) {
+        if(!cleanedUp) {
             cleanupSessions();
         }
 
     }
-
-    private HashMap<String, RoutingStrategy> storeToRoutingStrategy;
-    private HashMap<Pair<String, Integer>, Boolean> nodeIdStoreInitialized;
-
-    private HashMap<Pair<String, Integer>, SocketDestination> nodeIdStoreToSocketRequest;
-    private HashMap<Pair<String, Integer>, DataOutputStream> nodeIdStoreToOutputStreamRequest;
-    private HashMap<Pair<String, Integer>, DataInputStream> nodeIdStoreToInputStreamRequest;
-
-    private HashMap<Pair<String, Integer>, SocketAndStreams> nodeIdStoreToSocketAndStreams;
-
-    private List<String> storeNames;
-
-    private final static int MAX_STORES_PER_SESSION = 100;
 
     /**
      ** stores - the list of name of the stores to be streamed to
@@ -722,6 +453,29 @@ public class StreamingClient {
 
         throttler.maybeThrottle(1);
 
+    }
+
+    /**
+     ** resetCheckpointCallback - the callback that allows for the user to clean
+     * up the checkpoint at the end of the streaming session so a new session
+     * could, if necessary, start from 0 position.
+     **/
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    public void closeStreamingSessions(Callable resetCheckpointCallback) {
+
+        closeStreamingSessions();
+
+        Future future = streamingresults.submit(resetCheckpointCallback);
+        try {
+            future.get();
+
+        } catch(InterruptedException e1) {
+            // TODO Auto-generated catch block
+            e1.printStackTrace();
+        } catch(ExecutionException e1) {
+            // TODO Auto-generated catch block
+            e1.printStackTrace();
+        }
     }
 
     /**
