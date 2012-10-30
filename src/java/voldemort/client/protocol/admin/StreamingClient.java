@@ -50,10 +50,16 @@ public class StreamingClient {
     boolean isMultiSession;
     ExecutorService streamingresults;
 
+    // Every batch size we commit
     private static int BATCH_SIZE;
+
+    // we have to throttle to a certain qps
     private static int THROTTLE_QPS;
     private int entriesProcessed;
 
+    // In case a Recovery callback fails we got to stop it from getting any
+    // worse
+    // so we mark the session as bad and dont take any more requests
     private static boolean MARKED_BAD = false;
 
     protected EventThrottler throttler;
@@ -62,6 +68,9 @@ public class StreamingClient {
     AdminClientConfig adminClientConfig;
 
     String bootstrapURL;
+
+    // Data structures for the streaming maps from Pair<Store, Node Id> to
+    // Resource
 
     private HashMap<String, RoutingStrategy> storeToRoutingStrategy;
     private HashMap<Pair<String, Integer>, Boolean> nodeIdStoreInitialized;
@@ -84,21 +93,22 @@ public class StreamingClient {
     }
 
     /**
-     ** store - the name of the store to be streamed to
+     ** 
+     * @param store - the name of the store to be streamed to
      * 
-     * checkpointCallback - the callback that allows for the user to record the
-     * progress, up to the last event delivered. This callable would be invoked
-     * every so often internally.
+     * @param checkpointCallback - the callback that allows for the user to
+     *        record the progress, up to the last event delivered. This callable
+     *        would be invoked every so often internally.
      * 
-     * recoveryCallback - the callback that allows the user to rewind the
-     * upstream to the position recorded by the last complete call on
-     * checkpointCallback whenever an exception occurs during the streaming
-     * session.
+     * @param recoveryCallback - the callback that allows the user to rewind the
+     *        upstream to the position recorded by the last complete call on
+     *        checkpointCallback whenever an exception occurs during the
+     *        streaming session.
      * 
-     * allowMerge - whether to allow for the streaming event to be merged with
-     * online writes. If not, all online writes since the completion of the last
-     * streaming session will be lost at the end of the current streaming
-     * session.
+     * @param allowMerge - whether to allow for the streaming event to be merged
+     *        with online writes. If not, all online writes since the completion
+     *        of the last streaming session will be lost at the end of the
+     *        current streaming session.
      **/
     @SuppressWarnings({ "rawtypes", "unused", "unchecked" })
     public void initStreamingSession(String store,
@@ -114,9 +124,11 @@ public class StreamingClient {
     }
 
     /**
-     ** key - The key
+     * A Streaming Put call
+     ** 
+     * @param key - The key
      * 
-     * value - The value
+     * @param value - The value
      **/
     @SuppressWarnings({ "unchecked", "rawtypes" })
     public void streamingPut(ByteArray key, Versioned<byte[]> value) {
@@ -133,9 +145,10 @@ public class StreamingClient {
     }
 
     /**
-     ** resetCheckpointCallback - the callback that allows for the user to clean
-     * up the checkpoint at the end of the streaming session so a new session
-     * could, if necessary, start from 0 position.
+     ** 
+     * @param resetCheckpointCallback - the callback that allows for the user to
+     *        clean up the checkpoint at the end of the streaming session so a
+     *        new session could, if necessary, start from 0 position.
      **/
     @SuppressWarnings({ "unchecked", "rawtypes" })
     public void closeStreamingSession(Callable resetCheckpointCallback) {
@@ -173,21 +186,23 @@ public class StreamingClient {
     }
 
     /**
-     ** stores - the list of name of the stores to be streamed to
+     ** 
+     * @param stores - the list of name of the stores to be streamed to
      * 
-     * checkpointCallback - the callback that allows for the user to record the
-     * progress, up to the last event delivered. This callable would be invoked
-     * every so often internally.
      * 
-     * recoveryCallback - the callback that allows the user to rewind the
-     * upstream to the position recorded by the last complete call on
-     * checkpointCallback whenever an exception occurs during the streaming
-     * session.
+     * @param checkpointCallback - the callback that allows for the user to
+     *        record the progress, up to the last event delivered. This callable
+     *        would be invoked every so often internally.
      * 
-     * allowMerge - whether to allow for the streaming event to be merged with
-     * online writes. If not, all online writes since the completion of the last
-     * streaming session will be lost at the end of the current streaming
-     * session.
+     * @param recoveryCallback - the callback that allows the user to rewind the
+     *        upstream to the position recorded by the last complete call on
+     *        checkpointCallback whenever an exception occurs during the
+     *        streaming session.
+     * 
+     * @param allowMerge - whether to allow for the streaming event to be merged
+     *        with online writes. If not, all online writes since the completion
+     *        of the last streaming session will be lost at the end of the
+     *        current streaming session.
      **/
     @SuppressWarnings({ "unchecked", "rawtypes" })
     public void initStreamingSessions(List<String> stores,
@@ -268,8 +283,11 @@ public class StreamingClient {
 
     }
 
-    /*
+    /**
      * Add another store destination to an existing streaming session
+     * 
+     * 
+     * @param store: the name of the store to stream to
      */
     private void addStoreToSession(String store) {
 
@@ -308,6 +326,7 @@ public class StreamingClient {
             }
         }
         if(!foundStore) {
+            logger.error("Store Name not found on the cluster");
             throw new VoldemortException("Store Name not found on the cluster");
 
         }
@@ -315,11 +334,12 @@ public class StreamingClient {
     }
 
     /**
-     ** key - The key
+     ** 
+     * @param key - The key
      * 
-     * value - The value
+     * @param value - The value
      * 
-     * storeName takes an additional storename as a parameter
+     * @param storeName takes an additional store name as a parameter
      **/
     @SuppressWarnings({ "unchecked", "rawtypes", "unused" })
     public void streamingPut(ByteArray key, Versioned<byte[]> value, String storeName) {
@@ -368,16 +388,19 @@ public class StreamingClient {
                 entriesProcessed++;
 
             } catch(IOException e) {
+                logger.warn("Invoking the Recovery Callback");
                 Future future = streamingresults.submit(recoveryCallback);
                 try {
                     future.get();
 
                 } catch(InterruptedException e1) {
                     MARKED_BAD = true;
+                    logger.error("Recovery Callback failed");
                     e1.printStackTrace();
                     throw new VoldemortException("Recovery Callback failed");
                 } catch(ExecutionException e1) {
                     MARKED_BAD = true;
+                    logger.error("Recovery Callback failed");
                     e1.printStackTrace();
                     throw new VoldemortException("Recovery Callback failed");
                 }
@@ -413,16 +436,21 @@ public class StreamingClient {
                         VAdminProto.UpdatePartitionEntriesResponse.Builder updateResponse = ProtoUtils.readToBuilder(inputStream,
                                                                                                                      VAdminProto.UpdatePartitionEntriesResponse.newBuilder());
                         if(updateResponse.hasError()) {
+                            logger.warn("Invoking the Recovery Callback");
                             Future future = streamingresults.submit(recoveryCallback);
                             try {
                                 future.get();
 
                             } catch(InterruptedException e1) {
-                                // TODO Auto-generated catch block
+                                MARKED_BAD = true;
+                                logger.error("Recovery Callback failed");
                                 e1.printStackTrace();
+                                throw new VoldemortException("Recovery Callback failed");
                             } catch(ExecutionException e1) {
-                                // TODO Auto-generated catch block
+                                MARKED_BAD = true;
+                                logger.error("Recovery Callback failed");
                                 e1.printStackTrace();
+                                throw new VoldemortException("Recovery Callback failed");
                             }
                         } else {
                             Future future = streamingresults.submit(checkpointCallback);
@@ -470,9 +498,10 @@ public class StreamingClient {
     }
 
     /**
-     ** resetCheckpointCallback - the callback that allows for the user to clean
-     * up the checkpoint at the end of the streaming session so a new session
-     * could, if necessary, start from 0 position.
+     ** 
+     * @param resetCheckpointCallback - the callback that allows for the user to
+     *        clean up the checkpoint at the end of the streaming session so a
+     *        new session could, if necessary, start from 0 position.
      **/
     @SuppressWarnings({ "unchecked", "rawtypes" })
     public void closeStreamingSessions(Callable resetCheckpointCallback) {
@@ -569,6 +598,11 @@ public class StreamingClient {
         cleanupSessions();
 
     }
+
+    /**
+     * Helper method to Close all open socket connections and checkin back to
+     * the pool
+     */
 
     @SuppressWarnings({ "rawtypes", "unchecked" })
     private void cleanupSessions() {
