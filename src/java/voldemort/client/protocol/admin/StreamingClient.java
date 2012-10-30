@@ -14,6 +14,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.log4j.Logger;
+
 import voldemort.VoldemortException;
 import voldemort.client.protocol.RequestFormatType;
 import voldemort.client.protocol.pb.ProtoUtils;
@@ -30,6 +32,7 @@ import voldemort.versioning.Versioned;
 
 public class StreamingClient {
 
+    private static final Logger logger = Logger.getLogger(StreamingClient.class);
     @SuppressWarnings("rawtypes")
     private Callable checkpointCallback = null;
     @SuppressWarnings("rawtypes")
@@ -119,6 +122,7 @@ public class StreamingClient {
     public void streamingPut(ByteArray key, Versioned<byte[]> value) {
 
         if(MARKED_BAD) {
+            logger.error("Cannot stream more entries since Recovery Callback Failed!");
             throw new VoldemortException("Cannot stream more entries since Recovery Callback Failed!");
         }
 
@@ -155,7 +159,7 @@ public class StreamingClient {
         try {
             socket.close();
         } catch(IOException e) {
-            // logger.warn("Failed to close socket");
+            logger.warn("Failed to close socket");
         }
     }
 
@@ -191,6 +195,7 @@ public class StreamingClient {
                                       Callable recoveryCallback,
                                       boolean allowMerge) {
 
+        logger.info("Initializing a streaming session");
         adminClientConfig = new AdminClientConfig();
         adminClient = new AdminClient(bootstrapURL, adminClientConfig);
         this.checkpointCallback = checkpointCallback;
@@ -255,6 +260,7 @@ public class StreamingClient {
                 }
             }
             if(!foundStore) {
+                logger.error("Store Name not found on the cluster");
                 throw new VoldemortException("Store Name not found on the cluster");
 
             }
@@ -324,8 +330,10 @@ public class StreamingClient {
             addStoreToSession(storeName);
         }
 
-        if(MARKED_BAD)
+        if(MARKED_BAD) {
+            logger.error("Cannot stream more entries since Recovery Callback Failed!");
             throw new VoldemortException("Cannot stream more entries since Recovery Callback Failed!");
+        }
 
         List<Node> nodeList = storeToRoutingStrategy.get(storeName).routeRequest(key.get());
 
@@ -416,30 +424,36 @@ public class StreamingClient {
                                 // TODO Auto-generated catch block
                                 e1.printStackTrace();
                             }
-                        }
-                        Future future = streamingresults.submit(checkpointCallback);
-                        try {
-                            future.get();
+                        } else {
+                            Future future = streamingresults.submit(checkpointCallback);
+                            try {
+                                future.get();
 
-                        } catch(InterruptedException e1) {
-                            // TODO Auto-generated catch block
-                            e1.printStackTrace();
-                        } catch(ExecutionException e1) {
-                            // TODO Auto-generated catch block
-                            e1.printStackTrace();
+                            } catch(InterruptedException e1) {
+
+                                logger.warn("Checkpoint callback failed!");
+                                e1.printStackTrace();
+                            } catch(ExecutionException e1) {
+                                logger.warn("Checkpoint callback failed!");
+                                e1.printStackTrace();
+                            }
                         }
 
                     } catch(IOException e) {
+
+                        logger.warn("Invoking the Recovery Callback");
                         Future future = streamingresults.submit(recoveryCallback);
                         try {
                             future.get();
 
                         } catch(InterruptedException e1) {
                             MARKED_BAD = true;
+                            logger.error("Recovery Callback failed");
                             e1.printStackTrace();
                             throw new VoldemortException("Recovery Callback failed");
                         } catch(ExecutionException e1) {
                             MARKED_BAD = true;
+                            logger.error("Recovery Callback failed");
                             e1.printStackTrace();
                             throw new VoldemortException("Recovery Callback failed");
                         }
