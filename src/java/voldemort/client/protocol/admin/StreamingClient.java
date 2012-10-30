@@ -1,3 +1,19 @@
+/*
+ * Copyright 2008-2009 LinkedIn, Inc
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
+ * use this file except in compliance with the License. You may obtain a copy of
+ * the License at
+ * 
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
 package voldemort.client.protocol.admin;
 
 import java.io.DataInputStream;
@@ -30,6 +46,25 @@ import voldemort.utils.EventThrottler;
 import voldemort.utils.Pair;
 import voldemort.versioning.Versioned;
 
+/**
+ * 
+ * @author anagpal
+ * 
+ *         The streaming API allows for send events into voldemort stores in the
+ *         async fashion. All the partition and replication logic will be taken
+ *         care of internally.
+ * 
+ *         The users is expected to provide two callbacks, one for performing
+ *         period checkpoints and one for recovering the streaming process from
+ *         the last checkpoint.
+ * 
+ *         NOTE: The API is not thread safe, since if multiple threads use this
+ *         API we cannot make any guarantees about correctness of the
+ *         checkpointing mechanism.
+ * 
+ *         Right now we expect this to used by a single thread per data source
+ * 
+ */
 public class StreamingClient {
 
     private static final Logger logger = Logger.getLogger(StreamingClient.class);
@@ -414,6 +449,7 @@ public class StreamingClient {
             entriesProcessed = 0;
             newBatch = true;
 
+            logger.info("Trying to commit to Voldemort");
             for(Node node: adminClient.getAdminClientCluster().getNodes()) {
 
                 boolean nodeUsed = false; // check if any data was sent at all
@@ -453,6 +489,8 @@ public class StreamingClient {
                                 throw new VoldemortException("Recovery Callback failed");
                             }
                         } else {
+                            logger.info("Commit successful");
+                            logger.info("calling checkpoint callback");
                             Future future = streamingresults.submit(checkpointCallback);
                             try {
                                 future.get();
@@ -528,6 +566,8 @@ public class StreamingClient {
     @SuppressWarnings({ "unchecked", "rawtypes" })
     public void closeStreamingSessions() {
 
+        logger.info("closing the Streaming session");
+        logger.info("Trying to commit to Voldemort");
         for(Node node: adminClient.getAdminClientCluster().getNodes()) {
 
             boolean nodeUsed = false; // check if any data was sent at all
@@ -550,41 +590,55 @@ public class StreamingClient {
                     VAdminProto.UpdatePartitionEntriesResponse.Builder updateResponse = ProtoUtils.readToBuilder(inputStream,
                                                                                                                  VAdminProto.UpdatePartitionEntriesResponse.newBuilder());
                     if(updateResponse.hasError()) {
+
+                        logger.warn("Invoking Recovery Callback");
                         Future future = streamingresults.submit(recoveryCallback);
                         try {
                             future.get();
 
                         } catch(InterruptedException e1) {
-                            // TODO Auto-generated catch block
+                            MARKED_BAD = true;
+                            logger.error("Recovery Callback failed");
+                            e1.printStackTrace();
+                            throw new VoldemortException("Recovery Callback failed");
+                        } catch(ExecutionException e1) {
+                            MARKED_BAD = true;
+                            logger.error("Recovery Callback failed");
+                            e1.printStackTrace();
+                            throw new VoldemortException("Recovery Callback failed");
+                        }
+                    } else {
+
+                        logger.info("Commit successful");
+                        logger.info("calling checkpoint callback");
+                        Future future = streamingresults.submit(checkpointCallback);
+                        try {
+                            future.get();
+
+                        } catch(InterruptedException e1) {
+                            logger.warn("Checkpoint callback failed!");
                             e1.printStackTrace();
                         } catch(ExecutionException e1) {
-                            // TODO Auto-generated catch block
+                            logger.warn("Checkpoint callback failed!");
                             e1.printStackTrace();
                         }
-                    }
-                    Future future = streamingresults.submit(checkpointCallback);
-                    try {
-                        future.get();
 
-                    } catch(InterruptedException e1) {
-                        // TODO Auto-generated catch block
-                        e1.printStackTrace();
-                    } catch(ExecutionException e1) {
-                        // TODO Auto-generated catch block
-                        e1.printStackTrace();
                     }
 
                 } catch(IOException e) {
+                    logger.warn("Invoking Recovery Callback");
                     Future future = streamingresults.submit(recoveryCallback);
                     try {
                         future.get();
 
                     } catch(InterruptedException e1) {
                         MARKED_BAD = true;
+                        logger.error("Recovery Callback failed");
                         e1.printStackTrace();
                         throw new VoldemortException("Recovery Callback failed");
                     } catch(ExecutionException e1) {
                         MARKED_BAD = true;
+                        logger.error("Recovery Callback failed");
                         e1.printStackTrace();
                         throw new VoldemortException("Recovery Callback failed");
                     }
