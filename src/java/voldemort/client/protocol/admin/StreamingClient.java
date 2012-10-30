@@ -660,6 +660,8 @@ public class StreamingClient {
 
     @SuppressWarnings({ "rawtypes", "unchecked" })
     private void cleanupSessions() {
+
+        logger.info("Performing cleanup");
         for(String store: storeNames) {
 
             for(Node node: adminClient.getAdminClientCluster().getNodes()) {
