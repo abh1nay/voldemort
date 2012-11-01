@@ -21,6 +21,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -86,8 +87,11 @@ public class StreamingClient {
     ExecutorService streamingresults;
 
     // Every batch size we commit
-    private static int BATCH_SIZE;
+    private static int CHECKPOINT_COMMIT_SIZE;
 
+    // TODO
+    // provide knobs to tune this
+    private static int TIME_COMMIT_SIZE = 30;
     // we have to throttle to a certain qps
     private static int THROTTLE_QPS;
     private int entriesProcessed;
@@ -120,9 +124,11 @@ public class StreamingClient {
 
     private final static int MAX_STORES_PER_SESSION = 100;
 
+    Calendar calendar = Calendar.getInstance();
+
     public StreamingClient(StreamingClientConfig config) {
         this.bootstrapURL = config.getBootstrapURL();
-        BATCH_SIZE = config.getBatchSize();
+        CHECKPOINT_COMMIT_SIZE = config.getBatchSize();
         THROTTLE_QPS = config.getThrottleQPS();
 
     }
@@ -145,7 +151,7 @@ public class StreamingClient {
      *        of the last streaming session will be lost at the end of the
      *        current streaming session.
      **/
-    @SuppressWarnings({ "rawtypes", "unused", "unchecked" })
+    @SuppressWarnings({ "rawtypes", "unchecked" })
     public void initStreamingSession(String store,
                                      Callable checkpointCallback,
                                      Callable recoveryCallback,
@@ -165,7 +171,7 @@ public class StreamingClient {
      * 
      * @param value - The value
      **/
-    @SuppressWarnings({ "unchecked", "rawtypes" })
+    @SuppressWarnings({})
     public void streamingPut(ByteArray key, Versioned<byte[]> value) {
 
         if(MARKED_BAD) {
@@ -185,7 +191,7 @@ public class StreamingClient {
      *        clean up the checkpoint at the end of the streaming session so a
      *        new session could, if necessary, start from 0 position.
      **/
-    @SuppressWarnings({ "unchecked", "rawtypes" })
+    @SuppressWarnings({ "rawtypes" })
     public void closeStreamingSession(Callable resetCheckpointCallback) {
 
         closeStreamingSessions(resetCheckpointCallback);
@@ -196,7 +202,7 @@ public class StreamingClient {
      * Close the streaming session Flush all n/w buffers and call the commit
      * callback
      **/
-    @SuppressWarnings({ "unchecked", "rawtypes" })
+    @SuppressWarnings({})
     public void closeStreamingSession() {
 
         closeStreamingSessions();
@@ -255,7 +261,7 @@ public class StreamingClient {
         entriesProcessed = 0;
         newBatch = true;
         isMultiSession = true;
-        storeNames = stores;
+        storeNames = new ArrayList();
         this.throttler = new EventThrottler(THROTTLE_QPS);
 
         TimeUnit unit = TimeUnit.SECONDS;
@@ -276,12 +282,30 @@ public class StreamingClient {
         nodeIdStoreToSocketAndStreams = new HashMap();
         for(String store: stores) {
 
-            for(Node node: adminClient.getAdminClientCluster().getNodes()) {
+            addStoreToSession(store);
+        }
 
-                SocketDestination destination = new SocketDestination(node.getHost(),
-                                                                      node.getAdminPort(),
-                                                                      RequestFormatType.ADMIN_PROTOCOL_BUFFERS);
-                SocketAndStreams sands = streamingSocketPool.checkout(destination);
+    }
+
+    /**
+     * Add another store destination to an existing streaming session
+     * 
+     * 
+     * @param store: the name of the store to stream to
+     */
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private void addStoreToSession(String store) {
+
+        storeNames.add(store);
+
+        for(Node node: adminClient.getAdminClientCluster().getNodes()) {
+
+            SocketDestination destination = new SocketDestination(node.getHost(),
+                                                                  node.getAdminPort(),
+                                                                  RequestFormatType.ADMIN_PROTOCOL_BUFFERS);
+            SocketAndStreams sands = streamingSocketPool.checkout(destination);
+
+            try {
                 DataOutputStream outputStream = sands.getOutputStream();
                 DataInputStream inputStream = sands.getInputStream();
 
@@ -293,57 +317,12 @@ public class StreamingClient {
 
                 remoteStoreDefs = adminClient.getRemoteStoreDefList(node.getId()).getValue();
 
+            } catch(Exception e) {
+                close(sands.getSocket());
+                throw new VoldemortException(e);
+            } finally {
+                streamingSocketPool.checkin(destination, sands);
             }
-        }
-
-        boolean foundStore = false;
-        for(String store: stores) {
-            for(StoreDefinition remoteStoreDef: remoteStoreDefs) {
-                if(remoteStoreDef.getName().equals(store)) {
-                    RoutingStrategyFactory factory = new RoutingStrategyFactory();
-                    RoutingStrategy storeRoutingStrategy = factory.updateRoutingStrategy(remoteStoreDef,
-                                                                                         adminClient.getAdminClientCluster());
-
-                    storeToRoutingStrategy.put(store, storeRoutingStrategy);
-                    foundStore = true;
-                    break;
-                }
-            }
-            if(!foundStore) {
-                logger.error("Store Name not found on the cluster");
-                throw new VoldemortException("Store Name not found on the cluster");
-
-            }
-        }
-
-    }
-
-    /**
-     * Add another store destination to an existing streaming session
-     * 
-     * 
-     * @param store: the name of the store to stream to
-     */
-    private void addStoreToSession(String store) {
-
-        storeNames.add(store);
-
-        for(Node node: adminClient.getAdminClientCluster().getNodes()) {
-
-            SocketDestination destination = new SocketDestination(node.getHost(),
-                                                                  node.getAdminPort(),
-                                                                  RequestFormatType.ADMIN_PROTOCOL_BUFFERS);
-            SocketAndStreams sands = streamingSocketPool.checkout(destination);
-            DataOutputStream outputStream = sands.getOutputStream();
-            DataInputStream inputStream = sands.getInputStream();
-
-            nodeIdStoreToSocketRequest.put(new Pair(store, node.getId()), destination);
-            nodeIdStoreToOutputStreamRequest.put(new Pair(store, node.getId()), outputStream);
-            nodeIdStoreToInputStreamRequest.put(new Pair(store, node.getId()), inputStream);
-            nodeIdStoreToSocketAndStreams.put(new Pair(store, node.getId()), sands);
-            nodeIdStoreInitialized.put(new Pair(store, node.getId()), false);
-
-            remoteStoreDefs = adminClient.getRemoteStoreDefList(node.getId()).getValue();
 
         }
 
@@ -369,14 +348,38 @@ public class StreamingClient {
     }
 
     /**
+     * Remove a list of stores from the session
+     * 
+     * First commit all entries for these stores and then cleanup resources
+     * 
+     * @param storeNameToRemove List of stores to be removed from the current
+     *        streaming session
+     * 
+     **/
+    @SuppressWarnings({})
+    public void removeStoreFromSession(List<String> storeNameToRemove) {
+
+        logger.info("closing the Streaming session for a few stores");
+
+        commitToVoldemort(storeNameToRemove);
+        cleanupSessions(storeNameToRemove);
+
+    }
+
+    /**
      ** 
      * @param key - The key
      * 
      * @param value - The value
      * 
      * @param storeName takes an additional store name as a parameter
+     * 
+     *        If a store is added mid way through a streaming session we do not
+     *        play catchup and entries that were processed earlier during the
+     *        session will not be applied for the store.
+     * 
      **/
-    @SuppressWarnings({ "unchecked", "rawtypes", "unused" })
+    @SuppressWarnings({ "unchecked", "rawtypes" })
     public void streamingPut(ByteArray key, Versioned<byte[]> value, String storeName) {
 
         // If store does not exist in the stores list
@@ -387,7 +390,7 @@ public class StreamingClient {
 
         if(MARKED_BAD) {
             logger.error("Cannot stream more entries since Recovery Callback Failed!");
-            throw new VoldemortException("Cannot stream more entries since Recovery Callback Failed!");
+            throw new VoldemortException("Cannot stream more entries since Recovery Callback Failed! You Need to restart the session");
         }
 
         List<Node> nodeList = storeToRoutingStrategy.get(storeName).routeRequest(key.get());
@@ -445,68 +448,63 @@ public class StreamingClient {
 
         }
 
-        if(entriesProcessed == BATCH_SIZE) {
+        int secondsTime = calendar.get(Calendar.SECOND);
+        if(entriesProcessed == CHECKPOINT_COMMIT_SIZE || secondsTime % TIME_COMMIT_SIZE == 0) {
             entriesProcessed = 0;
             newBatch = true;
 
-            logger.info("Trying to commit to Voldemort");
-            for(Node node: adminClient.getAdminClientCluster().getNodes()) {
+            commitToVoldemort();
 
-                boolean nodeUsed = false; // check if any data was sent at all
-                                          // to this node
+        }
 
-                for(String store: storeNames) {
-                    if(!nodeIdStoreInitialized.get(new Pair(store, node.getId())))
-                        continue;
-                    nodeUsed = true;
-                    nodeIdStoreInitialized.put(new Pair(store, node.getId()), false);
+        throttler.maybeThrottle(1);
 
-                    DataOutputStream outputStream = nodeIdStoreToOutputStreamRequest.get(new Pair(store,
-                                                                                                  node.getId()));
+    }
 
-                    try {
-                        ProtoUtils.writeEndOfStream(outputStream);
-                        outputStream.flush();
-                        DataInputStream inputStream = nodeIdStoreToInputStreamRequest.get(new Pair(store,
-                                                                                                   node.getId()));
-                        VAdminProto.UpdatePartitionEntriesResponse.Builder updateResponse = ProtoUtils.readToBuilder(inputStream,
-                                                                                                                     VAdminProto.UpdatePartitionEntriesResponse.newBuilder());
-                        if(updateResponse.hasError()) {
-                            logger.warn("Invoking the Recovery Callback");
-                            Future future = streamingresults.submit(recoveryCallback);
-                            try {
-                                future.get();
+    /**
+     * Flush the network buffer and write all entries to the server Wait for an
+     * ack from the server This is a blocking call. It is invoked on every
+     * Commit batch size of entries It is also called on the close session call
+     */
 
-                            } catch(InterruptedException e1) {
-                                MARKED_BAD = true;
-                                logger.error("Recovery Callback failed");
-                                e1.printStackTrace();
-                                throw new VoldemortException("Recovery Callback failed");
-                            } catch(ExecutionException e1) {
-                                MARKED_BAD = true;
-                                logger.error("Recovery Callback failed");
-                                e1.printStackTrace();
-                                throw new VoldemortException("Recovery Callback failed");
-                            }
-                        } else {
-                            logger.info("Commit successful");
-                            logger.info("calling checkpoint callback");
-                            Future future = streamingresults.submit(checkpointCallback);
-                            try {
-                                future.get();
+    private void commitToVoldemort() {
+        commitToVoldemort(storeNames);
+    }
 
-                            } catch(InterruptedException e1) {
+    /**
+     * Flush the network buffer and write all entries to the serve. then wait
+     * for an ack from the server. This is a blocking call. It is invoked on
+     * every Commit batch size of entries, It is also called on the close
+     * session call
+     * 
+     * @param storeNameToCommit List of stores to be flushed and committed
+     * 
+     */
+    @SuppressWarnings({ "unchecked", "rawtypes", "unused" })
+    private void commitToVoldemort(List<String> storeNamesToCommit) {
+        logger.info("Trying to commit to Voldemort");
+        for(Node node: adminClient.getAdminClientCluster().getNodes()) {
 
-                                logger.warn("Checkpoint callback failed!");
-                                e1.printStackTrace();
-                            } catch(ExecutionException e1) {
-                                logger.warn("Checkpoint callback failed!");
-                                e1.printStackTrace();
-                            }
-                        }
+            boolean nodeUsed = false; // check if any data was sent at all
+                                      // to this node
 
-                    } catch(IOException e) {
+            for(String store: storeNamesToCommit) {
+                if(!nodeIdStoreInitialized.get(new Pair(store, node.getId())))
+                    continue;
+                nodeUsed = true;
+                nodeIdStoreInitialized.put(new Pair(store, node.getId()), false);
 
+                DataOutputStream outputStream = nodeIdStoreToOutputStreamRequest.get(new Pair(store,
+                                                                                              node.getId()));
+
+                try {
+                    ProtoUtils.writeEndOfStream(outputStream);
+                    outputStream.flush();
+                    DataInputStream inputStream = nodeIdStoreToInputStreamRequest.get(new Pair(store,
+                                                                                               node.getId()));
+                    VAdminProto.UpdatePartitionEntriesResponse.Builder updateResponse = ProtoUtils.readToBuilder(inputStream,
+                                                                                                                 VAdminProto.UpdatePartitionEntriesResponse.newBuilder());
+                    if(updateResponse.hasError()) {
                         logger.warn("Invoking the Recovery Callback");
                         Future future = streamingresults.submit(recoveryCallback);
                         try {
@@ -523,15 +521,47 @@ public class StreamingClient {
                             e1.printStackTrace();
                             throw new VoldemortException("Recovery Callback failed");
                         }
+                    } else {
+                        logger.info("Commit successful");
+                        logger.info("calling checkpoint callback");
+                        Future future = streamingresults.submit(checkpointCallback);
+                        try {
+                            future.get();
 
-                        e.printStackTrace();
+                        } catch(InterruptedException e1) {
+
+                            logger.warn("Checkpoint callback failed!");
+                            e1.printStackTrace();
+                        } catch(ExecutionException e1) {
+                            logger.warn("Checkpoint callback failed!");
+                            e1.printStackTrace();
+                        }
                     }
+
+                } catch(IOException e) {
+
+                    logger.warn("Invoking the Recovery Callback");
+                    Future future = streamingresults.submit(recoveryCallback);
+                    try {
+                        future.get();
+
+                    } catch(InterruptedException e1) {
+                        MARKED_BAD = true;
+                        logger.error("Recovery Callback failed");
+                        e1.printStackTrace();
+                        throw new VoldemortException("Recovery Callback failed");
+                    } catch(ExecutionException e1) {
+                        MARKED_BAD = true;
+                        logger.error("Recovery Callback failed");
+                        e1.printStackTrace();
+                        throw new VoldemortException("Recovery Callback failed");
+                    }
+
+                    e.printStackTrace();
                 }
-
             }
-        }
 
-        throttler.maybeThrottle(1);
+        }
 
     }
 
@@ -563,92 +593,12 @@ public class StreamingClient {
      * Close the streaming session Flush all n/w buffers and call the commit
      * callback
      **/
-    @SuppressWarnings({ "unchecked", "rawtypes" })
+    @SuppressWarnings({})
     public void closeStreamingSessions() {
 
         logger.info("closing the Streaming session");
-        logger.info("Trying to commit to Voldemort");
-        for(Node node: adminClient.getAdminClientCluster().getNodes()) {
 
-            boolean nodeUsed = false; // check if any data was sent at all
-            // to this node
-
-            for(String store: storeNames) {
-                if(!nodeIdStoreInitialized.get(new Pair(store, node.getId())))
-                    continue;
-                nodeUsed = true;
-                nodeIdStoreInitialized.put(new Pair(store, node.getId()), false);
-
-                DataOutputStream outputStream = nodeIdStoreToOutputStreamRequest.get(new Pair(store,
-                                                                                              node.getId()));
-
-                try {
-                    ProtoUtils.writeEndOfStream(outputStream);
-                    outputStream.flush();
-                    DataInputStream inputStream = nodeIdStoreToInputStreamRequest.get(new Pair(store,
-                                                                                               node.getId()));
-                    VAdminProto.UpdatePartitionEntriesResponse.Builder updateResponse = ProtoUtils.readToBuilder(inputStream,
-                                                                                                                 VAdminProto.UpdatePartitionEntriesResponse.newBuilder());
-                    if(updateResponse.hasError()) {
-
-                        logger.warn("Invoking Recovery Callback");
-                        Future future = streamingresults.submit(recoveryCallback);
-                        try {
-                            future.get();
-
-                        } catch(InterruptedException e1) {
-                            MARKED_BAD = true;
-                            logger.error("Recovery Callback failed");
-                            e1.printStackTrace();
-                            throw new VoldemortException("Recovery Callback failed");
-                        } catch(ExecutionException e1) {
-                            MARKED_BAD = true;
-                            logger.error("Recovery Callback failed");
-                            e1.printStackTrace();
-                            throw new VoldemortException("Recovery Callback failed");
-                        }
-                    } else {
-
-                        logger.info("Commit successful");
-                        logger.info("calling checkpoint callback");
-                        Future future = streamingresults.submit(checkpointCallback);
-                        try {
-                            future.get();
-
-                        } catch(InterruptedException e1) {
-                            logger.warn("Checkpoint callback failed!");
-                            e1.printStackTrace();
-                        } catch(ExecutionException e1) {
-                            logger.warn("Checkpoint callback failed!");
-                            e1.printStackTrace();
-                        }
-
-                    }
-
-                } catch(IOException e) {
-                    logger.warn("Invoking Recovery Callback");
-                    Future future = streamingresults.submit(recoveryCallback);
-                    try {
-                        future.get();
-
-                    } catch(InterruptedException e1) {
-                        MARKED_BAD = true;
-                        logger.error("Recovery Callback failed");
-                        e1.printStackTrace();
-                        throw new VoldemortException("Recovery Callback failed");
-                    } catch(ExecutionException e1) {
-                        MARKED_BAD = true;
-                        logger.error("Recovery Callback failed");
-                        e1.printStackTrace();
-                        throw new VoldemortException("Recovery Callback failed");
-                    }
-
-                    e.printStackTrace();
-                }
-            }
-
-        }
-
+        commitToVoldemort();
         cleanupSessions();
 
     }
@@ -657,12 +607,23 @@ public class StreamingClient {
      * Helper method to Close all open socket connections and checkin back to
      * the pool
      */
-
-    @SuppressWarnings({ "rawtypes", "unchecked" })
     private void cleanupSessions() {
 
+        cleanupSessions(storeNames);
+    }
+
+    /**
+     * Helper method to Close all open socket connections and checkin back to
+     * the pool
+     * 
+     * @param storeNameToCleanUp List of stores to be cleanedup from the current
+     *        streaming session
+     */
+    @SuppressWarnings({ "rawtypes", "unchecked" })
+    private void cleanupSessions(List<String> storeNamesToCleanUp) {
+
         logger.info("Performing cleanup");
-        for(String store: storeNames) {
+        for(String store: storeNamesToCleanUp) {
 
             for(Node node: adminClient.getAdminClientCluster().getNodes()) {
 
