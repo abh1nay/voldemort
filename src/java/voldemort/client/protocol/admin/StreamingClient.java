@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -121,6 +122,9 @@ public class StreamingClient {
     private HashMap<Pair<String, Integer>, SocketAndStreams> nodeIdStoreToSocketAndStreams;
 
     private List<String> storeNames;
+
+    private List<Node> nodesToStream;
+    private List<Integer> blackListedNodes;
 
     private final static int MAX_STORES_PER_SESSION = 100;
 
@@ -245,11 +249,45 @@ public class StreamingClient {
      *        of the last streaming session will be lost at the end of the
      *        current streaming session.
      **/
-    @SuppressWarnings({ "unchecked", "rawtypes" })
+    @SuppressWarnings({ "rawtypes" })
     public void initStreamingSessions(List<String> stores,
                                       Callable checkpointCallback,
                                       Callable recoveryCallback,
                                       boolean allowMerge) {
+
+        initStreamingSessions(stores, checkpointCallback, recoveryCallback, allowMerge, null);
+
+    }
+
+    /**
+     ** 
+     * @param stores - the list of name of the stores to be streamed to
+     * 
+     * 
+     * @param checkpointCallback - the callback that allows for the user to
+     *        record the progress, up to the last event delivered. This callable
+     *        would be invoked every so often internally.
+     * 
+     * @param recoveryCallback - the callback that allows the user to rewind the
+     *        upstream to the position recorded by the last complete call on
+     *        checkpointCallback whenever an exception occurs during the
+     *        streaming session.
+     * 
+     * @param allowMerge - whether to allow for the streaming event to be merged
+     *        with online writes. If not, all online writes since the completion
+     *        of the last streaming session will be lost at the end of the
+     *        current streaming session.
+     * 
+     * @param blackListedNodes - the list of Nodes not to stream to; we can
+     *        probably recover them later from the replicas
+     **/
+
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    public void initStreamingSessions(List<String> stores,
+                                      Callable checkpointCallback,
+                                      Callable recoveryCallback,
+                                      boolean allowMerge,
+                                      List<Integer> blackListedNodes) {
 
         logger.info("Initializing a streaming session");
         adminClientConfig = new AdminClientConfig();
@@ -266,6 +304,23 @@ public class StreamingClient {
 
         TimeUnit unit = TimeUnit.SECONDS;
 
+        Collection<Node> nodesInCluster = adminClient.getAdminClientCluster().getNodes();
+        nodesToStream = new ArrayList();
+
+        if(blackListedNodes != null && blackListedNodes.size() > 0) {
+
+            this.blackListedNodes = blackListedNodes;
+
+        }
+        for(Node node: nodesInCluster) {
+            if(blackListedNodes != null && blackListedNodes.size() > 0) {
+                if(!blackListedNodes.contains(node.getId())) {
+                    nodesToStream.add(node);
+                }
+            } else
+                nodesToStream.add(node);
+
+        }
         // socket pool
         streamingSocketPool = new SocketPool(adminClient.getAdminClientCluster().getNumberOfNodes()
                                                      * MAX_STORES_PER_SESSION,
@@ -298,7 +353,7 @@ public class StreamingClient {
 
         storeNames.add(store);
 
-        for(Node node: adminClient.getAdminClientCluster().getNodes()) {
+        for(Node node: nodesToStream) {
 
             SocketDestination destination = new SocketDestination(node.getHost(),
                                                                   node.getAdminPort(),
@@ -319,9 +374,8 @@ public class StreamingClient {
 
             } catch(Exception e) {
                 close(sands.getSocket());
-                throw new VoldemortException(e);
-            } finally {
                 streamingSocketPool.checkin(destination, sands);
+                throw new VoldemortException(e);
             }
 
         }
@@ -398,6 +452,12 @@ public class StreamingClient {
         // sent the k/v pair to the nodes
         for(Node node: nodeList) {
 
+            if(blackListedNodes != null && blackListedNodes.size() > 0) {
+                if(blackListedNodes.contains(node.getId()))
+                    continue;
+            }
+            // if node! in blacklistednodes
+
             VAdminProto.PartitionEntry partitionEntry = VAdminProto.PartitionEntry.newBuilder()
                                                                                   .setKey(ProtoUtils.encodeBytes(key))
                                                                                   .setVersioned(ProtoUtils.encodeVersioned(value))
@@ -451,7 +511,6 @@ public class StreamingClient {
         int secondsTime = calendar.get(Calendar.SECOND);
         if(entriesProcessed == CHECKPOINT_COMMIT_SIZE || secondsTime % TIME_COMMIT_SIZE == 0) {
             entriesProcessed = 0;
-            newBatch = true;
 
             commitToVoldemort();
 
@@ -483,15 +542,12 @@ public class StreamingClient {
     @SuppressWarnings({ "unchecked", "rawtypes", "unused" })
     private void commitToVoldemort(List<String> storeNamesToCommit) {
         logger.info("Trying to commit to Voldemort");
-        for(Node node: adminClient.getAdminClientCluster().getNodes()) {
-
-            boolean nodeUsed = false; // check if any data was sent at all
-                                      // to this node
+        for(Node node: nodesToStream) {
 
             for(String store: storeNamesToCommit) {
                 if(!nodeIdStoreInitialized.get(new Pair(store, node.getId())))
                     continue;
-                nodeUsed = true;
+
                 nodeIdStoreInitialized.put(new Pair(store, node.getId()), false);
 
                 DataOutputStream outputStream = nodeIdStoreToOutputStreamRequest.get(new Pair(store,
@@ -625,7 +681,7 @@ public class StreamingClient {
         logger.info("Performing cleanup");
         for(String store: storeNamesToCleanUp) {
 
-            for(Node node: adminClient.getAdminClientCluster().getNodes()) {
+            for(Node node: nodesToStream) {
 
                 SocketAndStreams sands = nodeIdStoreToSocketAndStreams.get(new Pair(store,
                                                                                     node.getId()));
