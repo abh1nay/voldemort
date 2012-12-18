@@ -2082,6 +2082,32 @@ public class AdminClient {
     }
 
     /**
+     * Append RO store data atomically on a single node
+     * <p>
+     * 
+     * @param nodeId The node id where we would want to swap the data
+     * @param storeName Name of the store
+     * @param storeDir The directory where the data is present
+     * @return Returns the location of the previous directory
+     */
+    public String swapDeltaStore(int nodeId, String storeName, String storeDir) {
+        VAdminProto.SwapStoreRequest.Builder swapStoreRequest = VAdminProto.SwapStoreRequest.newBuilder()
+                                                                                            .setStoreDir(storeDir)
+                                                                                            .setStoreName(storeName);
+        VAdminProto.VoldemortAdminRequest adminRequest = VAdminProto.VoldemortAdminRequest.newBuilder()
+                                                                                          .setSwapStore(swapStoreRequest)
+                                                                                          .setType(VAdminProto.AdminRequestType.SWAP_STORE_DELTA)
+                                                                                          .build();
+        VAdminProto.SwapStoreResponse.Builder response = sendAndReceive(nodeId,
+                                                                        adminRequest,
+                                                                        VAdminProto.SwapStoreResponse.newBuilder());
+        if(response.hasError()) {
+            throwException(response.getError());
+        }
+        return response.getPreviousStoreDir();
+    }
+
+    /**
      * Returns the read-only storage format - {@link ReadOnlyStorageFormat} for
      * a list of stores
      * 

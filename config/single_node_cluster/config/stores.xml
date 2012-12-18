@@ -54,4 +54,42 @@
       <schema-info version="0">{"cnt":"int32", "country":"string"}</schema-info>
     </value-serializer>
   </store>
+  <store>
+    <name>old</name>
+    <persistence>bdb</persistence>
+    <description>"test store"</description>
+    <owners>anagpal@linkedin.com</owners>
+    <routing-strategy>consistent-routing</routing-strategy>
+    <routing>client</routing>
+    <replication-factor>1</replication-factor>
+    <required-reads>1</required-reads>
+    <required-writes>1</required-writes>
+    <key-serializer>
+      <type>json</type>
+      <schema-info version="0">"string"</schema-info>
+    </key-serializer>
+    <value-serializer>
+      <type>json</type>
+      <schema-info version="0">{"cnt":"int32", "country":"string"}</schema-info>
+    </value-serializer>
+  </store>
+  <store>
+    <name>delta-store</name>
+    <persistence>bdb</persistence>
+    <description>"test store"</description>
+    <owners>anagpal@linkedin.com</owners>
+    <routing-strategy>consistent-routing</routing-strategy>
+    <routing>client</routing>
+    <replication-factor>1</replication-factor>
+    <required-reads>1</required-reads>
+    <required-writes>1</required-writes>
+    <key-serializer>
+      <type>json</type>
+      <schema-info version="0">"string"</schema-info>
+    </key-serializer>
+    <value-serializer>
+      <type>json</type>
+      <schema-info version="0">{"cnt":"int32", "country":"string"}</schema-info>
+    </value-serializer>
+  </store>
 </stores>

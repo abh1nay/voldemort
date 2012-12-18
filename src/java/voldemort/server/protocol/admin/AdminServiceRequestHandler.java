@@ -264,6 +264,10 @@ public class AdminServiceRequestHandler implements RequestHandler {
                 ProtoUtils.writeMessage(outputStream,
                                         handleReserveMemory(request.getReserveMemory()));
                 break;
+            case SWAP_STORE_DELTA:
+                ProtoUtils.writeMessage(outputStream,
+                                        handleSwapROStoreDelta(request.getSwapStore()));
+                break;
             default:
                 throw new VoldemortException("Unkown operation " + request.getType());
         }
@@ -726,6 +730,62 @@ public class AdminServiceRequestHandler implements RequestHandler {
 
         try {
             response.setPreviousStoreDir(swapStore(storeName, dir));
+            return response.build();
+        } catch(VoldemortException e) {
+            response.setError(ProtoUtils.encodeError(errorCodeMapper, e));
+            logger.error("handleSwapStore failed for request(" + request.toString() + ")", e);
+            return response.build();
+        }
+    }
+
+    /**
+     * Given a read-only store name and a directory, swaps it in while returning
+     * the directory path being swapped out
+     * 
+     * @param storeName The name of the read-only store
+     * @param directory The directory being swapped in
+     * @return The directory path which was swapped out
+     * @throws VoldemortException
+     */
+    private String swapStoreDelta(String storeName, String directory) throws VoldemortException {
+
+        ReadOnlyStorageEngine store = getReadOnlyStorageEngine(metadataStore,
+                                                               storeRepository,
+                                                               storeName);
+
+        if(!Utils.isReadableDir(directory))
+            throw new VoldemortException("Store directory '" + directory
+                                         + "' is not a readable directory.");
+
+        String currentDirPath = store.getCurrentDirPath();
+
+        logger.info("Swapping RO store '" + storeName + "' to version directory '" + directory
+                    + "'");
+        store.swapFilesDelta(directory);
+        logger.info("Swapping swapped RO store '" + storeName + "' to version directory '"
+                    + directory + "'");
+
+        return currentDirPath;
+    }
+
+    public VAdminProto.SwapStoreResponse handleSwapROStoreDelta(VAdminProto.SwapStoreRequest request) {
+        final String dir = request.getStoreDir();
+        final String storeName = request.getStoreName();
+        VAdminProto.SwapStoreResponse.Builder response = VAdminProto.SwapStoreResponse.newBuilder();
+
+        if(!metadataStore.getServerState().equals(MetadataStore.VoldemortState.NORMAL_SERVER)) {
+            response.setError(ProtoUtils.encodeError(errorCodeMapper,
+                                                     new VoldemortException("Voldemort server "
+                                                                            + metadataStore.getNodeId()
+                                                                            + " not in normal state while swapping store "
+                                                                            + storeName
+                                                                            + " with directory "
+                                                                            + dir)));
+            return response.build();
+        }
+
+        try {
+            response.setPreviousStoreDir(swapStoreDelta(storeName, dir));
             return response.build();
         } catch(VoldemortException e) {
             response.setError(ProtoUtils.encodeError(errorCodeMapper, e));

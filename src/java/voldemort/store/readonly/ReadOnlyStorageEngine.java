@@ -630,4 +630,8 @@ public class ReadOnlyStorageEngine implements StorageEngine<ByteArray, byte[], b
         // this should be easy to support, will be added later
         return false;
     }
+
+    public void swapFilesDelta(String directory) {
+
+    }
 }

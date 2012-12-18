@@ -51,8 +51,9 @@ public class AbstractStoreBuilderConfigurable {
         this.storeDef = storeDefs.get(0);
 
         this.numChunks = conf.getInt("num.chunks", -1);
-        if(this.numChunks < 1)
-            throw new VoldemortException("num.chunks not specified in the job conf.");
+        // if(this.numChunks < 1)
+        // throw new
+        // VoldemortException("num.chunks not specified in the job conf.");
 
         this.saveKeys = conf.getBoolean("save.keys", false);
         this.reducerPerBucket = conf.getBoolean("reducer.per.bucket", false);
