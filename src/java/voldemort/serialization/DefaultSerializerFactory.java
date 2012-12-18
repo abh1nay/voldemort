@@ -26,6 +26,7 @@ import voldemort.serialization.avro.AvroGenericSerializer;
 import voldemort.serialization.avro.AvroReflectiveSerializer;
 import voldemort.serialization.avro.AvroSpecificSerializer;
 import voldemort.serialization.avro.versioned.AvroVersionedGenericSerializer;
+import voldemort.serialization.avro.versioned.AvroVersionedSpecificSerializer;
 import voldemort.serialization.json.JsonTypeDefinition;
 import voldemort.serialization.json.JsonTypeSerializer;
 import voldemort.serialization.protobuf.ProtoBufSerializer;
@@ -56,6 +57,7 @@ public class DefaultSerializerFactory implements SerializerFactory {
     // this will break existing clients while looking for the version byte
 
     private static final String AVRO_GENERIC_VERSIONED_TYPE_NAME = "avro-generic-versioned";
+    private static final String AVRO_SPECIFIC_VERSIONED_TYPE_NAME = "avro-specific-versioned";
 
     public Serializer<?> getSerializer(SerializerDefinition serializerDef) {
         String name = serializerDef.getName();
@@ -95,6 +97,17 @@ public class DefaultSerializerFactory implements SerializerFactory {
                 return new AvroVersionedGenericSerializer(versions);
             } else {
                 return new AvroVersionedGenericSerializer(serializerDef.getCurrentSchemaInfo());
+            }
+
+        } else if(name.equals(AVRO_SPECIFIC_VERSIONED_TYPE_NAME)) {
+            if(serializerDef.hasVersion()) {
+                Map<Integer, String> versions = new HashMap<Integer, String>();
+                for(Map.Entry<Integer, String> entry: serializerDef.getAllSchemaInfoVersions()
+                                                                   .entrySet())
+                    versions.put(entry.getKey(), entry.getValue());
+                return new AvroVersionedSpecificSerializer<SpecificRecord>(versions);
+            } else {
+                return new AvroVersionedSpecificSerializer<SpecificRecord>(serializerDef.getCurrentSchemaInfo());
             }
 
         } else {
