@@ -108,6 +108,9 @@ public class VoldemortBuildAndPushJob extends AbstractJob {
     private final List<Future> informedResults;
     private ExecutorService informedExecutor;
 
+    private String jsonKeyField;
+    private String jsonValueField;
+
     public VoldemortBuildAndPushJob(String name, Props props) {
         super(name);
         this.props = props;
@@ -172,6 +175,8 @@ public class VoldemortBuildAndPushJob extends AbstractJob {
         boolean build = props.getBoolean("build", true);
         boolean push = props.getBoolean("push", true);
 
+        jsonKeyField = props.getString("key.selection", null);
+        jsonValueField = props.getString("value.selection", null);
         if(build && push && dataDirs.size() != 1) {
             // Should have only one data directory ( which acts like the parent
             // directory to all
@@ -263,10 +268,22 @@ public class VoldemortBuildAndPushJob extends AbstractJob {
         int requiredWrites = props.getInt("build.required.writes", 1);
         String description = props.getString("push.store.description", "");
         String owners = props.getString("push.store.owners", "");
-        String keySchema = "\n\t\t<type>json</type>\n\t\t<schema-info version=\"0\">"
-                           + schema.getKeyType() + "</schema-info>\n\t";
-        String valSchema = "\n\t\t<type>json</type>\n\t\t<schema-info version=\"0\">"
-                           + schema.getValueType() + "</schema-info>\n\t";
+        String keySchema;
+        keySchema = "\n\t\t<type>json</type>\n\t\t<schema-info version=\"0\">"
+                    + schema.getKeyType() + "</schema-info>\n\t";
+        if(jsonKeyField != null && jsonKeyField.length() > 0)
+            keySchema = "\n\t\t<type>json</type>\n\t\t<schema-info version=\"0\">"
+                        + schema.getKeyType().subtype(jsonKeyField) + "</schema-info>\n\t";
+        String valSchema;
+        valSchema = "\n\t\t<type>json</type>\n\t\t<schema-info version=\"0\">"
+                    + schema.getValueType() + "</schema-info>\n\t";
+
+        log.info("jsonValueField is: " + jsonValueField);
+        if(jsonValueField != null && jsonValueField.length() > 0)
+            valSchema = "\n\t\t<type>json</type>\n\t\t<schema-info version=\"0\">"
+                        + schema.getValueType().subtype(jsonValueField) + "</schema-info>\n\t";
+
+        log.info("Value schema after selection is: " + valSchema);
 
         boolean hasCompression = false;
         if(props.containsKey("build.compress.value"))
@@ -457,8 +474,8 @@ public class VoldemortBuildAndPushJob extends AbstractJob {
         URI uri = new URI(url);
         Path outputDir = new Path(props.getString("build.output.dir"), uri.getHost());
         Path inputPath = getInputPath();
-        String keySelection = props.getString("build.key.selection", null);
-        String valSelection = props.getString("build.value.selection", null);
+        String keySelection = props.getString("key.selection", null);
+        String valSelection = props.getString("value.selection", null);
         CheckSumType checkSumType = CheckSum.fromString(props.getString("checksum.type",
                                                                         CheckSum.toString(CheckSumType.MD5)));
         boolean saveKeys = props.getBoolean("save.keys", true);
