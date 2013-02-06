@@ -137,6 +137,12 @@ public class StreamingClient {
 
     }
 
+    public void updateThrottleLimit(int throttleQPS) {
+        THROTTLE_QPS = throttleQPS;
+
+        this.throttler = new EventThrottler(THROTTLE_QPS);
+    }
+
     /**
      ** 
      * @param store - the name of the store to be streamed to
@@ -196,7 +202,7 @@ public class StreamingClient {
      *        new session could, if necessary, start from 0 position.
      **/
     @SuppressWarnings({ "rawtypes" })
-    public void closeStreamingSession(Callable resetCheckpointCallback) {
+    public synchronized void closeStreamingSession(Callable resetCheckpointCallback) {
 
         closeStreamingSessions(resetCheckpointCallback);
 
@@ -207,7 +213,7 @@ public class StreamingClient {
      * callback
      **/
     @SuppressWarnings({})
-    public void closeStreamingSession() {
+    public synchronized void closeStreamingSession() {
 
         closeStreamingSessions();
 
@@ -526,7 +532,8 @@ public class StreamingClient {
      * Commit batch size of entries It is also called on the close session call
      */
 
-    private void commitToVoldemort() {
+    public synchronized void commitToVoldemort() {
+        entriesProcessed = 0;
         commitToVoldemort(storeNames);
     }
 
@@ -628,7 +635,7 @@ public class StreamingClient {
      *        new session could, if necessary, start from 0 position.
      **/
     @SuppressWarnings({ "unchecked", "rawtypes" })
-    public void closeStreamingSessions(Callable resetCheckpointCallback) {
+    public synchronized void closeStreamingSessions(Callable resetCheckpointCallback) {
 
         closeStreamingSessions();
 
@@ -650,7 +657,7 @@ public class StreamingClient {
      * callback
      **/
     @SuppressWarnings({})
-    public void closeStreamingSessions() {
+    public synchronized void closeStreamingSessions() {
 
         logger.info("closing the Streaming session");
 
@@ -697,4 +704,3 @@ public class StreamingClient {
     }
 
 }
-
