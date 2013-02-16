@@ -188,11 +188,97 @@ public class VoldemortBuildAndPushJob extends AbstractJob {
             throw new RuntimeException(" Since we are only pushing, number of data directories ( comma separated ) should be equal to number of cluster urls ");
         }
 
-        // Check every url individually
+        // Check if cluster xmls match
         HashMap<String, Exception> exceptions = Maps.newHashMap();
 
+        boolean clustersMatch = false;
+        Cluster firstCluster = new AdminClient(clusterUrl.get(0), new AdminClientConfig()).getAdminClientCluster();
         for(int index = 0; index < clusterUrl.size(); index++) {
-            String url = clusterUrl.get(index);
+            String thisurl = clusterUrl.get(index);
+            AdminClient thisadminClient = new AdminClient(thisurl, new AdminClientConfig());
+
+            Cluster thisCluster = thisadminClient.getAdminClientCluster();
+            if(!thisCluster.equals(firstCluster)) {
+                clustersMatch = false;
+                break;
+            } else
+                clustersMatch = true;
+
+        }
+
+        Boolean multicoloPush = props.getBoolean("build.multicolo", false);
+        if(!clustersMatch || !multicoloPush) {
+            for(int index = 0; index < clusterUrl.size(); index++) {
+                String url = clusterUrl.get(index);
+
+                log.info("Working on " + url);
+
+                try {
+
+                    if(isAvroJob)
+                        verifyAvroSchemaAndVersions(url, isAvroVersioned);
+                    else
+                        verifySchema(url);
+
+                    String buildOutputDir;
+                    if(build) {
+                        buildOutputDir = runBuildStore(props, url);
+                    } else {
+                        buildOutputDir = dataDirs.get(index);
+                    }
+
+                    if(push) {
+                        if(log.isDebugEnabled())
+                            log.debug("Informing about push start ...");
+                        informedResults.add(this.informedExecutor.submit(new InformedClient(this.props,
+                                                                                            "Running",
+                                                                                            this.getId())));
+
+                        runPushStore(props, url, buildOutputDir);
+                    }
+
+                    if(build && push && !props.getBoolean("build.output.keep", false)) {
+                        JobConf jobConf = new JobConf();
+
+                        if(props.containsKey("hadoop.job.ugi")) {
+                            jobConf.set("hadoop.job.ugi", props.getString("hadoop.job.ugi"));
+                        }
+
+                        log.info("Deleting " + buildOutputDir);
+                        HadoopUtils.deletePathIfExists(jobConf, buildOutputDir);
+                        log.info("Deleted " + buildOutputDir);
+                    }
+
+                    if(log.isDebugEnabled())
+                        log.debug("Informing about push finish ...");
+                    informedResults.add(this.informedExecutor.submit(new InformedClient(this.props,
+                                                                                        "Finished",
+                                                                                        this.getId())));
+
+                    for(Future result: informedResults) {
+                        try {
+                            result.get();
+                        } catch(Exception e) {
+                            this.log.error("Exception in consumer", e);
+                        }
+                    }
+                    this.informedExecutor.shutdownNow();
+                } catch(Exception e) {
+                    log.error("Exception during build and push for url " + url, e);
+                    exceptions.put(url, e);
+                }
+            }
+
+            if(exceptions.size() > 0) {
+                log.error("Got exceptions while pushing to "
+                          + Joiner.on(",").join(exceptions.keySet()) + " => "
+                          + Joiner.on(",").join(exceptions.values()));
+                System.exit(-1);
+            }
+        }
+
+        else {
+            String url = clusterUrl.get(0);
 
             log.info("Working on " + url);
 
@@ -207,19 +293,23 @@ public class VoldemortBuildAndPushJob extends AbstractJob {
                 if(build) {
                     buildOutputDir = runBuildStore(props, url);
                 } else {
-                    buildOutputDir = dataDirs.get(index);
+                    buildOutputDir = dataDirs.get(0);
                 }
 
                 if(push) {
-                    if(log.isDebugEnabled())
-                        log.debug("Informing about push start ...");
-                    informedResults.add(this.informedExecutor.submit(new InformedClient(this.props,
-                                                                                        "Running",
-                                                                                        this.getId())));
+                    Thread threads[] = new Thread[clusterUrl.size()];
+                    for(int index = 0; index < clusterUrl.size(); index++) {
 
-                    runPushStore(props, url, buildOutputDir);
+                        PushThread pRunnable = new PushThread(url, buildOutputDir);
+                        Thread pushThread = new Thread(pRunnable);
+                        threads[index] = pushThread;
+
+                    }
+                    for(int index = 0; index < clusterUrl.size(); index++) {
+                        threads[index].join();
+
+                    }
                 }
-
                 if(build && push && !props.getBoolean("build.output.keep", false)) {
                     JobConf jobConf = new JobConf();
 
@@ -247,15 +337,33 @@ public class VoldemortBuildAndPushJob extends AbstractJob {
                 }
                 this.informedExecutor.shutdownNow();
             } catch(Exception e) {
-                log.error("Exception during build and push for url " + url, e);
-                exceptions.put(url, e);
+
+                log.error(e);
             }
+
+        }
+    }
+
+    class PushThread implements Runnable {
+
+        String buildOutputDir;
+        String url;
+
+        PushThread(String url, String buildOutputDir) {
+
+            this.url = url;
+            this.buildOutputDir = buildOutputDir;
         }
 
-        if(exceptions.size() > 0) {
-            log.error("Got exceptions while pushing to " + Joiner.on(",").join(exceptions.keySet())
-                      + " => " + Joiner.on(",").join(exceptions.values()));
-            System.exit(-1);
+        @Override
+        public void run() {
+            try {
+                runPushStore(props, url, buildOutputDir);
+            } catch(Exception e) {
+
+                log.error("push failed for:" + url);
+                e.printStackTrace();
+            }
         }
     }
 
