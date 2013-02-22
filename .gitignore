@@ -14,3 +14,5 @@ server.state
 .temp
 .idea
 data/
+.gradle
+build
