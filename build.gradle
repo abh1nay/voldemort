@@ -10,6 +10,14 @@ repositories {
        dirs repositoryPath
     }
 }
+project.ext {
+    asm = "org.ow2.asm:asm:4.0"
+    junit = "junit:junit:4.6"
+
+  }
+ 
+
+
 
 dependencies {
   compile 'com.google.protobuf:protobuf-java:2.3.0'
@@ -26,6 +34,10 @@ dependencies {
   compile 'org.iq80.snappy:snappy:0.2'
   compile 'org.jdom:jdom:1.1'
   compile 'com.google.collections:google-collections:1.0'
+  testCompile group: 'org.mockito', name: 'mockito-all', version: '1.8.5'
+  testCompile group: 'colt', name: 'colt', version: '1.2.0'
+  testCompile junit
+  testRuntime "junit:junit:4.6"
 }
 
 sourceSets {
@@ -33,9 +45,25 @@ sourceSets {
         java {
             srcDir 'src/java'
         }
-resources {
+    
+        resources {
             srcDir 'src/java'
         }
     }
+ test {
+        java {
+            srcDir 'src/test'
+        }
+     }
+   
 }
 
+version = '1.0'
+
+jar {
+    manifest {
+        attributes 'Implementation-Title': 'Gradle Quickstart', 'Implementation-Version': version
+    }
+}
+
+ 
