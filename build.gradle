@@ -36,6 +36,9 @@ dependencies {
   compile 'com.google.collections:google-collections:1.0'
   testCompile group: 'org.mockito', name: 'mockito-all', version: '1.8.5'
   testCompile group: 'colt', name: 'colt', version: '1.2.0'
+  compile junit
+  compile group: 'org.mockito', name: 'mockito-all', version: '1.8.5'
+  compile group: 'colt', name: 'colt', version: '1.2.0'
   testCompile junit
   testRuntime "junit:junit:4.6"
 }
@@ -43,7 +46,7 @@ dependencies {
 sourceSets {
     main {
         java {
-            srcDir 'src/java'
+            srcDirs = ['src/java', 'test/common/','test/*']
         }
     
         resources {
@@ -52,13 +55,32 @@ sourceSets {
     }
  test {
         java {
-            srcDir 'src/test'
+            srcDir 'test'
         }
+ resources {
+            srcDir 'test'
+        }
+     
      }
    
 }
 
+//copy the resources for the juni test cases explcitly
+task copyTask(type: Copy) {
+    from 'test/common'
+    into 'build/classes/test'
+}
+
 version = '1.0'
+
+test{
+	dependsOn copyTask
+	//workingDir = new File(rootDir , "src/");
+	println "working directory is:" + rootDir
+        minHeapSize = "1g"
+        maxHeapSize = "2g"
+	//scanForTestClasses = false
+}
 
 jar {
     manifest {
@@ -66,4 +88,9 @@ jar {
     }
 }
 
- 
+
+BUILD_NUMBER = "$System.env.BUILD_NUMBER"
+
+
+
+
