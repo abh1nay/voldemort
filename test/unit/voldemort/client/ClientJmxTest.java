@@ -16,6 +16,8 @@
 
 package voldemort.client;
 
+import static org.junit.Assert.fail;
+
 import java.lang.management.ManagementFactory;
 import java.net.URISyntaxException;
 
@@ -78,11 +80,9 @@ public class ClientJmxTest extends AbstractStoreClientFactoryTest {
         mbServer = ManagementFactory.getPlatformMBeanServer();
     }
 
-    @Override
     @After
     public void tearDown() throws Exception {
         mbServer = null;
-        super.tearDown();
         socketService.stop();
     }
 

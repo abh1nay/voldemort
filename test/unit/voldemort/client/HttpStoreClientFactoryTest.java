@@ -58,7 +58,6 @@ public class HttpStoreClientFactoryTest extends AbstractStoreClientFactoryTest {
         url = getLocalNode().getHttpUrl().toString();
     }
 
-    @Override
     @After
     public void tearDown() throws Exception {
         httpStore.close();

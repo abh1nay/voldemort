@@ -16,6 +16,9 @@
 
 package voldemort.client;
 
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.fail;
+
 import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -69,10 +72,9 @@ public class SocketStoreClientFactoryTest extends AbstractStoreClientFactoryTest
         socketService.start();
     }
 
-    @Override
     @After
     public void tearDown() throws Exception {
-        super.tearDown();
+
         socketService.stop();
     }
 

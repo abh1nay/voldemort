@@ -16,10 +16,12 @@
 
 package voldemort.client;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.fail;
+
 import java.net.URISyntaxException;
 import java.util.Date;
-
-import junit.framework.TestCase;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -37,13 +39,12 @@ import voldemort.xml.ClusterMapper;
 /**
  * 
  */
-public abstract class AbstractStoreClientFactoryTest extends TestCase {
+public abstract class AbstractStoreClientFactoryTest {
 
     private Node node;
     private Cluster cluster;
     private String storeDefinitionXml;
 
-    @Override
     @Before
     public void setUp() throws Exception {
         this.storeDefinitionXml = VoldemortTestConstants.getTwoStoreDefinitionsXml();
