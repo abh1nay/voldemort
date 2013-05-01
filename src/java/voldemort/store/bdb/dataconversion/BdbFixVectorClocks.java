@@ -128,7 +128,7 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
 
         byte[] winningValue = null;
         long winningVersion = 0L;
-        long winningTimeStamp = System.currentTimeMillis();
+        long winningTimeStamp = 0L;
         // pick the one value with the biggest clockentry
         // for every versioned value associated with the key find the value
         // with greatest clockentry
@@ -141,6 +141,14 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
                     winningValue = val.getValue();
                     winningTimeStamp = version.getTimestamp();
                     break; // break out of inner loop minor optimization
+                }
+                // if versions are equal use the latest timestamp
+                if(winningVersion == clockEntry.getVersion()
+                   && winningTimeStamp < version.getTimestamp()) {
+                    winningVersion = clockEntry.getVersion();
+                    winningValue = val.getValue();
+                    winningTimeStamp = version.getTimestamp();
+
                 }
             }
 
