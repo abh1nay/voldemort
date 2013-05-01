@@ -54,7 +54,7 @@ public class BdbFixVectorClocksTest {
 
         // add second duplicate
         clockEntries = new ArrayList<ClockEntry>();
-        for(short node: Arrays.asList(nodes1)) {
+        for(short node: Arrays.asList(nodes2)) {
             clockEntries.add(new ClockEntry(node, version2));
         }
         VectorClock vc2 = new VectorClock(clockEntries, timestamp);
@@ -63,7 +63,7 @@ public class BdbFixVectorClocksTest {
 
         // add 3rd duplicate
         clockEntries = new ArrayList<ClockEntry>();
-        for(short node: Arrays.asList(nodes1)) {
+        for(short node: Arrays.asList(nodes3)) {
             clockEntries.add(new ClockEntry(node, version3));
         }
         VectorClock vc3 = new VectorClock(clockEntries, timestamp);
@@ -72,7 +72,7 @@ public class BdbFixVectorClocksTest {
 
         // add 4th duplicate
         clockEntries = new ArrayList<ClockEntry>();
-        for(short node: Arrays.asList(nodes1)) {
+        for(short node: Arrays.asList(nodes4)) {
             clockEntries.add(new ClockEntry(node, version4));
         }
         VectorClock vc4 = new VectorClock(clockEntries, timestamp);
