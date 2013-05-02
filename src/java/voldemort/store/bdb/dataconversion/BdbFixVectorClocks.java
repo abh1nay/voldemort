@@ -29,14 +29,21 @@ import com.sleepycat.je.DatabaseEntry;
 import com.sleepycat.je.LockMode;
 import com.sleepycat.je.OperationStatus;
 
+/**
+ * 
+ * BdbFixVectorClocks scrapes an input store on a single node and for each key
+ * it checks if there are duplicates/concurrent versions for the key It will
+ * then pick the corresponding value with the highest clock entry in the vector
+ * clock It then writes it to a destination path
+ * 
+ */
+
 public class BdbFixVectorClocks extends AbstractBdbConversion {
 
     private final AdminClient adminClient;
     private final RoutingStrategyFactory factory;
     private final RoutingStrategy storeRoutingStrategy;
 
-    private final StoreDefinitionsMapper storeDefMapper;
-    private StoreDefinition storeDef = null;
     static Logger logger = Logger.getLogger(BdbFixVectorClocks.class);
 
     BdbFixVectorClocks(String storeName,
@@ -47,6 +54,9 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
                        int logFileSize,
                        int nodeMax) throws Exception {
         super(storeName, clusterXmlPath, sourceEnvPath, destEnvPath, logFileSize, nodeMax);
+
+        StoreDefinitionsMapper storeDefMapper;
+        StoreDefinition storeDef = null;
 
         factory = new RoutingStrategyFactory();
 
@@ -110,13 +120,21 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
             }
 
             if(scanCount % 1000000 == 0)
-                logger.info("Reverted " + scanCount + " entries in "
+                logger.info("Repaired " + scanCount + " entries in "
                             + (System.currentTimeMillis() - startTime) / 1000 + " secs");
         }
-        logger.info("Reverted " + scanCount + " entries and " + keyCount + " keys in "
+        logger.info("Repaired " + scanCount + " entries and " + keyCount + " keys in "
                     + (System.currentTimeMillis() - startTime) / 1000 + " secs");
     }
 
+    /**
+     * 
+     * @param storeRoutingStrategy The routing strategy object for the store
+     * @param keyEntry The Databaseentry containg key bytes
+     * @param valueEntry The DatabaseEnntry containing versioned value bytes
+     * @return A DatabaseEntry object with just one versioned value with highest
+     *         clockentry
+     */
     public static DatabaseEntry getWinningValueEntry(RoutingStrategy storeRoutingStrategy,
                                                      DatabaseEntry keyEntry,
                                                      DatabaseEntry valueEntry) {
@@ -136,11 +154,11 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
             VectorClock version = (VectorClock) val.getVersion();
             List<ClockEntry> clockEntries = version.getEntries();
             for(ClockEntry clockEntry: clockEntries) {
-                if(winningVersion < clockEntry.getVersion()) {
+                if(clockEntry.getVersion() > winningVersion) {
                     winningVersion = clockEntry.getVersion();
                     winningValue = val.getValue();
                     winningTimeStamp = version.getTimestamp();
-                    break; // break out of inner loop minor optimization
+
                 }
                 // if versions are equal use the latest timestamp
                 if(winningVersion == clockEntry.getVersion()
@@ -249,7 +267,7 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
         try {
             clockFixer.transfer();
         } catch(Exception e) {
-            logger.error("Error converting data", e);
+            logger.error("Error deduplicating data", e);
         } finally {
             if(clockFixer != null)
                 clockFixer.close();
