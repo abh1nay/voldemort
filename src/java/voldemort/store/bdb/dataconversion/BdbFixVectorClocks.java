@@ -18,7 +18,9 @@ import voldemort.routing.RoutingStrategy;
 import voldemort.routing.RoutingStrategyFactory;
 import voldemort.store.StoreBinaryFormat;
 import voldemort.store.StoreDefinition;
+import voldemort.utils.ByteUtils;
 import voldemort.utils.CmdUtils;
+import voldemort.utils.Pair;
 import voldemort.versioning.ClockEntry;
 import voldemort.versioning.VectorClock;
 import voldemort.versioning.Version;
@@ -45,6 +47,9 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
     private final RoutingStrategy storeRoutingStrategy;
 
     static Logger logger = Logger.getLogger(BdbFixVectorClocks.class);
+    private final boolean showKeys;
+
+    private final int numSamples;
 
     BdbFixVectorClocks(String storeName,
                        String storesXmlPath,
@@ -52,9 +57,12 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
                        String sourceEnvPath,
                        String destEnvPath,
                        int logFileSize,
-                       int nodeMax) throws Exception {
+                       int nodeMax,
+                       boolean showKeys,
+                       int numSamples) throws Exception {
         super(storeName, clusterXmlPath, sourceEnvPath, destEnvPath, logFileSize, nodeMax);
 
+        this.numSamples = numSamples;
         StoreDefinitionsMapper storeDefMapper;
         StoreDefinition storeDef = null;
 
@@ -79,6 +87,7 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
         adminClient = new AdminClient(cluster, new AdminClientConfig(), new ClientConfig());
         storeRoutingStrategy = factory.updateRoutingStrategy(storeDef,
                                                              adminClient.getAdminClientCluster());
+        this.showKeys = showKeys;
     }
 
     @Override
@@ -91,11 +100,32 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
         long startTime = System.currentTimeMillis();
         int scanCount = 0;
         int keyCount = 0;
+        int keyWithDupCount = 0;
+        ArrayList<Pair<byte[], ArrayList<VectorClock>>> samples = new ArrayList();
+
         while(cursor.getNext(keyEntry, valueEntry, LockMode.READ_UNCOMMITTED) == OperationStatus.SUCCESS) {
             keyCount++;
 
             vals = StoreBinaryFormat.fromByteArray(valueEntry.getData());
             scanCount += vals.size();
+
+            if(vals.size() > 1) {
+                keyWithDupCount++;
+            }
+            if(showKeys) {
+                ArrayList<VectorClock> versions = new ArrayList();
+                for(Versioned<byte[]> val: vals) {
+                    VectorClock version = (VectorClock) val.getVersion();
+                    versions.add(version);
+                }
+                if(keyCount < numSamples) {
+                    samples.add(new Pair(keyEntry.getData(), versions));
+                } else if(keyCount % 5000 == 0) {
+                    samples.remove(0);
+                    samples.add(new Pair(keyEntry.getData(), versions));
+
+                }
+            }
 
             DatabaseEntry winningValueEntry = getWinningValueEntry(storeRoutingStrategy,
                                                                    keyEntry,
@@ -123,14 +153,33 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
                 logger.info("Repaired " + scanCount + " entries in "
                             + (System.currentTimeMillis() - startTime) / 1000 + " secs");
         }
-        logger.info("Repaired " + scanCount + " entries and " + keyCount + " keys in "
+        logger.info("Repaired " + scanCount + " entries and " + keyCount + " keys; with "
+                    + keyWithDupCount + " keys having concurrent values in "
                     + (System.currentTimeMillis() - startTime) / 1000 + " secs");
+
+        logger.info("Spitting out samples");
+
+        for(int i = 0; i < samples.size(); i++) {
+            Pair pair = samples.get(i);
+
+            byte[] keyBytes = (byte[]) pair.getFirst();
+            ArrayList<VectorClock> versions = (ArrayList<VectorClock>) pair.getSecond();
+            for(int j = 0; j < versions.size(); j++) {
+                VectorClock version = versions.get(j);
+                logger.info("KeyBytes : " + ByteUtils.toHexString(keyBytes) + " Version: "
+                            + version);
+                logger.info("Striped KeyBytes : "
+                            + ByteUtils.toHexString(StoreBinaryFormat.extractKey(keyBytes))
+                            + " Version: " + version);
+            }
+        }
+
     }
 
     /**
      * 
      * @param storeRoutingStrategy The routing strategy object for the store
-     * @param keyEntry The Databaseentry containg key bytes
+     * @param keyEntry The Databaseentry containing key bytes
      * @param valueEntry The DatabaseEnntry containing versioned value bytes
      * @return A DatabaseEntry object with just one versioned value with highest
      *         clockentry
@@ -238,6 +287,15 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
               .withRequiredArg()
               .describedAs("btree-nodemax")
               .ofType(Integer.class);
+        parser.accepts("show-keys", "[Optional] Print out keys and associated vector clock")
+              .withRequiredArg()
+              .describedAs("show-keys")
+              .ofType(Boolean.class);
+        parser.accepts("num-samples",
+                       "[Optional] Number of keys to be logged for check [Default 20]")
+              .withRequiredArg()
+              .describedAs("num-samples")
+              .ofType(Integer.class);
 
         OptionSet options = parser.parse(args);
 
@@ -255,6 +313,8 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
 
         Integer logFileSize = CmdUtils.valueOf(options, "je-log-size", 60);
         Integer nodeMax = CmdUtils.valueOf(options, "btree-nodemax", 512);
+        Boolean showKeys = CmdUtils.valueOf(options, "show-keys", false);
+        Integer numSamples = CmdUtils.valueOf(options, "num-samples", 20);
 
         BdbFixVectorClocks clockFixer = new BdbFixVectorClocks(storeName,
                                                                storesXmlPath,
@@ -262,7 +322,9 @@ public class BdbFixVectorClocks extends AbstractBdbConversion {
                                                                sourceEnvPath,
                                                                destEnvPath,
                                                                logFileSize,
-                                                               nodeMax);
+                                                               nodeMax,
+                                                               showKeys,
+                                                               numSamples);
 
         try {
             clockFixer.transfer();
