@@ -49,7 +49,8 @@ done
 CLASSPATH=$CLASSPATH:$base_dir/dist/resources
 
 if [ -z "$VOLD_OPTS" ]; then
-  VOLD_OPTS="-Xmx2G -server -Dcom.sun.management.jmxremote "
+  VOLD_OPTS= VOLD_OPTS="-Xms10G -Xmx10G -server -Dcom.sun.management.jmxremote "
+
 fi
 
 # add '-Dlog4j.debug ' to debug log4j issues.
