@@ -140,8 +140,8 @@ public class Rebalancer implements Runnable {
      * @param cluster Cluster metadata to change
      * @param rebalancePartitionsInfo List of rebalance partitions info
      * @param swapRO Boolean to indicate swapping of RO store
-     * @param changeClusterMetadata Boolean to indicate a change of cluster
-     *        metadata
+     * @param changeClusterAndStoresMetadata Boolean to indicate a change of
+     *        cluster metadata
      * @param changeRebalanceState Boolean to indicate a change in rebalance
      *        state
      * @param rollback Boolean to indicate that we are rolling back or not
@@ -150,21 +150,21 @@ public class Rebalancer implements Runnable {
                                      List<StoreDefinition> storeDefs,
                                      List<RebalancePartitionsInfo> rebalancePartitionsInfo,
                                      boolean swapRO,
-                                     boolean changeClusterMetadata,
+                                     boolean changeClusterAndStoresMetadata,
                                      boolean changeRebalanceState,
                                      boolean rollback) {
         Cluster currentCluster = metadataStore.getCluster();
         List<StoreDefinition> currentStoreDefs = metadataStore.getStoreDefList();
 
         logger.info("Server doing rebalance state change with options [ cluster metadata change - "
-                    + changeClusterMetadata + " ], [ changing rebalancing state - "
+                    + changeClusterAndStoresMetadata + " ], [ changing rebalancing state - "
                     + changeRebalanceState + " ], [ changing swapping RO - " + swapRO
                     + " ], [ rollback - " + rollback + " ]");
 
         // Variables to track what has completed
         List<RebalancePartitionsInfo> completedRebalancePartitionsInfo = Lists.newArrayList();
         List<String> swappedStoreNames = Lists.newArrayList();
-        boolean completedClusterChange = false;
+        boolean completedClusterAndStoresChange = false;
         boolean completedRebalanceSourceClusterChange = false;
         Cluster previousRebalancingSourceCluster = null;
         List<StoreDefinition> previousRebalancingSourceStores = null;
@@ -193,7 +193,7 @@ public class Rebalancer implements Runnable {
              * operation will be rejected with InvalidMetadataException since
              * this server itself is not aware of C3
              */
-            // CHANGE REBALANCING STATE
+
             // CHANGE REBALANCING STATE
             if(changeRebalanceState) {
                 try {
@@ -233,7 +233,7 @@ public class Rebalancer implements Runnable {
             }
 
             // CHANGE CLUSTER METADATA AND STORE METADATA
-            if(changeClusterMetadata) {
+            if(changeClusterAndStoresMetadata) {
                 logger.info("Switching cluster metadata from " + currentCluster + " to " + cluster);
                 logger.info("Switching stores metadata from " + currentStoreDefs + " to "
                             + storeDefs);
@@ -241,7 +241,7 @@ public class Rebalancer implements Runnable {
                                        cluster,
                                        MetadataStore.STORES_KEY,
                                        storeDefs);
-                completedClusterChange = true;
+                completedClusterAndStoresChange = true;
             }
 
             // SWAP RO DATA FOR ALL STORES
@@ -254,7 +254,7 @@ public class Rebalancer implements Runnable {
             logger.error("Got exception while changing state, now rolling back changes", e);
 
             // ROLLBACK CLUSTER AND STORES CHANGE
-            if(completedClusterChange) {
+            if(completedClusterAndStoresChange) {
                 try {
                     logger.info("Rolling back cluster.xml to " + currentCluster);
                     logger.info("Rolling back stores.xml to " + currentStoreDefs);
@@ -263,8 +263,8 @@ public class Rebalancer implements Runnable {
                                            MetadataStore.STORES_KEY,
                                            currentStoreDefs);
                 } catch(Exception exception) {
-                    logger.error("Error while rolling back cluster metadata to " + currentCluster,
-                                 exception);
+                    logger.error("Error while rolling back cluster metadata to " + currentCluster
+                                 + " Stores metadata to " + currentStoreDefs, exception);
                 }
             }
 
